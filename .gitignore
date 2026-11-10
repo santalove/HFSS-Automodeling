@@ -1,0 +1,38 @@
+# ===== 发布包与历史产物 =====
+# release 里是已打包的 EXE 和用户仿真数据，体积约 3GB，用 7z 归档，不进版本库
+release/
+legacy_outputs/
+archive/
+*.7z
+*.zip
+
+# ===== AEDT 工程与仿真结果 =====
+# 二进制，无法 diff，且单文件常达数 MB
+*.aedt
+*.aedtresults
+*.aedt.lock
+*.lock
+
+# ===== 构建中间产物 =====
+build/
+dist/
+outputs/
+.Temp/
+
+# ===== Python 缓存 =====
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# ===== 打包依赖与无关素材 =====
+packaging/wheels/
+PPT/
+myself/
+.vscode/
+
+# ===== 日志 =====
+*.log
+
+# ===== 旧目录残留 =====
+# AI study 是旧版代码目录清理后的残留，其中文件与当前源码不一致，不纳入版本库
+AI study/
