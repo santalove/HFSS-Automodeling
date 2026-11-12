@@ -48,6 +48,18 @@ from tool_metadata import COPYRIGHT, DEVELOPER
 LAYER_COLUMNS = ["Layer", "Type", "Role", "Thickness", "DK", "DF", "Material override", "Copper type"]
 
 
+class NoWheelComboBox(QComboBox):
+    """不响应滚轮的下拉框，滚轮事件交还给外层滚动区。
+
+    Qt 默认在鼠标悬停时用滚轮切换下拉框选中项，滚动标签页经过
+    “上/下参考铜层”等控件时容易误改参数。这里忽略滚轮事件，让它继续
+    向父级传播，由 QScrollArea 负责滚动页面；点击展开下拉框不受影响。
+    """
+
+    def wheelEvent(self, event) -> None:  # noqa: N802 - Qt 虚函数命名约定
+        event.ignore()
+
+
 def app_directory() -> Path:
     """Folder that owns the running application.
 
@@ -546,7 +558,7 @@ class MainWindow(QMainWindow):
 
     # ---------- common widgets and stackup tab ----------
     def _combo(self, values: list[str], current: str) -> QComboBox:
-        combo = QComboBox()
+        combo = NoWheelComboBox()
         combo.addItems(values)
         combo.setCurrentText(current)
         combo.currentTextChanged.connect(self.on_editor_changed)
@@ -616,7 +628,7 @@ class MainWindow(QMainWindow):
         toolbar.addSeparator()
         self.language_label = QLabel("Language")
         toolbar.addWidget(self.language_label)
-        self.language_combo = QComboBox()
+        self.language_combo = NoWheelComboBox()
         self.language_combo.addItem("English", "en")
         self.language_combo.addItem("中文", "zh_CN")
         self.language_combo.currentIndexChanged.connect(self._on_language_changed)
@@ -669,10 +681,10 @@ class MainWindow(QMainWindow):
         right_layout = QVBoxLayout(right)
         group = QGroupBox("Differential stripline settings")
         form = QFormLayout(group)
-        self.signal_layer = QComboBox()
+        self.signal_layer = NoWheelComboBox()
         self.signal_layer.currentTextChanged.connect(self.on_signal_layer_selected)
-        self.stackup_upper_reference = QComboBox()
-        self.stackup_lower_reference = QComboBox()
+        self.stackup_upper_reference = NoWheelComboBox()
+        self.stackup_lower_reference = NoWheelComboBox()
         self.stackup_upper_reference.currentTextChanged.connect(self.on_editor_changed)
         self.stackup_lower_reference.currentTextChanged.connect(self.on_editor_changed)
         self.w_line, self.s_line, self.g_line = QLineEdit(), QLineEdit(), QLineEdit()
@@ -734,12 +746,12 @@ class MainWindow(QMainWindow):
 
         route_group = QGroupBox("GF routing mode")
         route_form = QFormLayout(route_group)
-        self.gssg_layer = QComboBox()
+        self.gssg_layer = NoWheelComboBox()
         self.gssg_layer.currentTextChanged.connect(self.on_gssg_layer_selected)
         self.gf_mode = QLineEdit(); self.gf_mode.setReadOnly(True)
         self.inner_gf_layer = QLineEdit("L1"); self.inner_gf_layer.setReadOnly(True)
-        self.inner_upper_reference = QComboBox()
-        self.inner_lower_reference = QComboBox()
+        self.inner_upper_reference = NoWheelComboBox()
+        self.inner_lower_reference = NoWheelComboBox()
         self.inner_upper_reference.currentTextChanged.connect(self.on_editor_changed)
         self.inner_lower_reference.currentTextChanged.connect(self.on_editor_changed)
         route_form.addRow("GF pad layer", self.inner_gf_layer)
@@ -808,7 +820,7 @@ class MainWindow(QMainWindow):
             edit.textChanged.connect(self.on_editor_changed)
             self.inner_pad_void_fields[key] = edit
             pad_void_form.addRow(label, edit)
-        self.inner_pad_void_end_layer = QComboBox()
+        self.inner_pad_void_end_layer = NoWheelComboBox()
         self.inner_pad_void_end_layer.currentTextChanged.connect(
             self.on_editor_changed
         )
@@ -828,8 +840,8 @@ class MainWindow(QMainWindow):
         self.inner_mechanical_group = QGroupBox("Optional mechanical VIA")
         mechanical_form = QFormLayout(self.inner_mechanical_group)
         self.inner_mechanical_via_enabled = QCheckBox("Enable mechanical VIA")
-        self.inner_mechanical_start_layer = QComboBox()
-        self.inner_mechanical_end_layer = QComboBox()
+        self.inner_mechanical_start_layer = NoWheelComboBox()
+        self.inner_mechanical_end_layer = NoWheelComboBox()
         self.inner_mechanical_column_radius = QLineEdit()
         self.inner_mechanical_pad_radius = QLineEdit()
         self.inner_mechanical_via_enabled.toggled.connect(
@@ -899,7 +911,7 @@ class MainWindow(QMainWindow):
         controls = QWidget(); controls_layout = QVBoxLayout(controls)
         mode_group = QGroupBox("VIA topology")
         mode_form = QFormLayout(mode_group)
-        self.via_mode = QComboBox()
+        self.via_mode = NoWheelComboBox()
         self.via_mode.addItem("Single-stage VIA", "single")
         self.via_mode.addItem("Two-stage VIA", "multistage")
         self.via_mode.currentIndexChanged.connect(self.on_via_mode_changed)
@@ -909,8 +921,8 @@ class MainWindow(QMainWindow):
         layer_group = QGroupBox("Single-stage route layers")
         self.single_via_layer_group = layer_group
         layer_form = QFormLayout(layer_group)
-        self.via_start_layer = QComboBox()
-        self.via_end_layer = QComboBox()
+        self.via_start_layer = NoWheelComboBox()
+        self.via_end_layer = NoWheelComboBox()
         self.via_start_layer.currentTextChanged.connect(self.on_via_route_layer_selected)
         self.via_end_layer.currentTextChanged.connect(self.on_via_route_layer_selected)
         layer_form.addRow("Left route layer", self.via_start_layer)
@@ -942,7 +954,7 @@ class MainWindow(QMainWindow):
                 ("Upper reference copper", "upper"),
                 ("Lower reference copper", "lower"),
             ):
-                combo = QComboBox()
+                combo = NoWheelComboBox()
                 combo.currentTextChanged.connect(self.on_editor_changed)
                 self.via_reference_combos[prefix][side] = combo
                 form.addRow(label, combo)
@@ -975,8 +987,8 @@ class MainWindow(QMainWindow):
         self.single_via_mechanical_group = mechanical_group
         mechanical_form = QFormLayout(mechanical_group)
         self.mechanical_via_enabled = QCheckBox("Enable mechanical VIA")
-        self.mechanical_start_layer = QComboBox()
-        self.mechanical_end_layer = QComboBox()
+        self.mechanical_start_layer = NoWheelComboBox()
+        self.mechanical_end_layer = NoWheelComboBox()
         self.mechanical_column_radius = QLineEdit()
         self.mechanical_pad_radius = QLineEdit()
         self.mechanical_via_enabled.toggled.connect(
@@ -1012,7 +1024,7 @@ class MainWindow(QMainWindow):
             "Mechanical endpoint",
             "Final output layer",
         ):
-            combo = QComboBox()
+            combo = NoWheelComboBox()
             combo.currentTextChanged.connect(self.on_multistage_layer_selected)
             self.multistage_layer_combos.append(combo)
             multistage_layer_form.addRow(label, combo)
@@ -1098,7 +1110,7 @@ class MainWindow(QMainWindow):
         body.addWidget(cap_warning)
         layers = QGroupBox("CAP route and pad geometry")
         form = QFormLayout(layers)
-        self.cap_component_side = QComboBox()
+        self.cap_component_side = NoWheelComboBox()
         self.cap_component_side.addItem("Top", "top")
         self.cap_component_side.addItem("Bottom", "bottom")
         self.cap_component_side.currentIndexChanged.connect(
@@ -1107,7 +1119,7 @@ class MainWindow(QMainWindow):
         form.addRow("Component mounting side", self.cap_component_side)
         self.cap_layer_combos = {}
         for side in ("input", "output"):
-            combo = QComboBox()
+            combo = NoWheelComboBox()
             combo.currentTextChanged.connect(self._refresh_cap_route_choices)
             self.cap_layer_combos[side] = combo
             form.addRow(f"{'Left' if side == 'input' else 'Right'} route copper", combo)
@@ -1166,7 +1178,7 @@ class MainWindow(QMainWindow):
             edit.textChanged.connect(self.on_editor_changed)
             self.cap_surface_fields[key] = edit
             surface_form.addRow(label, edit)
-        self.cap_mask_opening_mode = QComboBox()
+        self.cap_mask_opening_mode = NoWheelComboBox()
         self.cap_mask_opening_mode.addItem("Pair open window", "pair_window")
         self.cap_mask_opening_mode.currentIndexChanged.connect(self.on_editor_changed)
         surface_form.addRow("Opening mode", self.cap_mask_opening_mode)
@@ -1253,7 +1265,7 @@ class MainWindow(QMainWindow):
                 line_fields[key] = edit; side_form.addRow(label, edit)
             refs = {}
             for direction in ("upper", "lower"):
-                combo = QComboBox(); combo.currentTextChanged.connect(self.on_editor_changed)
+                combo = NoWheelComboBox(); combo.currentTextChanged.connect(self.on_editor_changed)
                 refs[direction] = combo; side_form.addRow(f"{direction.title()} reference copper", combo)
             for key, label in (("column_radius", "Laser copper-column radius"),
                                ("pad_radius", "Laser landing-pad radius"),
@@ -1269,7 +1281,7 @@ class MainWindow(QMainWindow):
             side_form.addRow(enabled)
             stages = {}
             for position in ("start", "end"):
-                combo = QComboBox(); combo.currentTextChanged.connect(self.on_editor_changed)
+                combo = NoWheelComboBox(); combo.currentTextChanged.connect(self.on_editor_changed)
                 stages[position] = combo
                 side_form.addRow(f"Mechanical {position} copper", combo)
             self.cap_line_fields[side] = line_fields
