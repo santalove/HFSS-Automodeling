@@ -1,7 +1,7 @@
 # HFSS 通用叠层建模工具
 
-Developer: **39004628 / Luxshare**  
-Copyright © 2026 39004628 / Luxshare. All rights reserved.
+Developer: **Yetaikunle**  
+Copyright © 2026 Yetaikunle. All rights reserved.
 
 使用已安装 PyAEDT 的环境启动 GUI：
 

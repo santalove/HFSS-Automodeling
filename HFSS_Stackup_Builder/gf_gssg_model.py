@@ -10,8 +10,8 @@ E ground bridge, and one wave port at the far end of the differential traces.
 No solve is started; the AEDT desktop is intentionally left open.
 """
 
-# Developer: 39004628 / Luxshare
-# Copyright © 2026 39004628 / Luxshare. All rights reserved.
+# Developer: Yetaikunle
+# Copyright © 2026 Yetaikunle. All rights reserved.
 
 from __future__ import annotations
 

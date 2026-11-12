@@ -5,8 +5,8 @@ mechanical VIA, and an optional final laser stack.  Every vertical signal
 column remains an independent solid; only coplanar signal metal is united.
 """
 
-# Developer: 39004628 / Luxshare
-# Copyright © 2026 39004628 / Luxshare. All rights reserved.
+# Developer: Yetaikunle
+# Copyright © 2026 Yetaikunle. All rights reserved.
 
 from __future__ import annotations
 

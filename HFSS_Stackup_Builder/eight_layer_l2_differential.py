@@ -7,8 +7,8 @@
 信号层和 W/S/G 均集中在文件开头，便于后续修改。
 """
 
-# Developer: 39004628 / Luxshare
-# Copyright © 2026 39004628 / Luxshare. All rights reserved.
+# Developer: Yetaikunle
+# Copyright © 2026 Yetaikunle. All rights reserved.
 
 from pathlib import Path
 

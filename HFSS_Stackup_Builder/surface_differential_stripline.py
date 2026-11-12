@@ -4,8 +4,8 @@ The script creates geometry, ports, a Radiation open region, Setup1, and an
 interpolating sweep. It saves the AEDT project but never starts a solve.
 """
 
-# Developer: 39004628 / Luxshare
-# Copyright © 2026 39004628 / Luxshare. All rights reserved.
+# Developer: Yetaikunle
+# Copyright © 2026 Yetaikunle. All rights reserved.
 
 from __future__ import annotations
 

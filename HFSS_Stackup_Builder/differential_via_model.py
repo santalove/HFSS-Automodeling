@@ -9,8 +9,8 @@ Both line ends have independent W/S/G, trace length, and fanout length.
 No solve is started and existing projects are never overwritten.
 """
 
-# Developer: 39004628 / Luxshare
-# Copyright © 2026 39004628 / Luxshare. All rights reserved.
+# Developer: Yetaikunle
+# Copyright © 2026 Yetaikunle. All rights reserved.
 
 from __future__ import annotations
 

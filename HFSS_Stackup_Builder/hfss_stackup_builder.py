@@ -1,7 +1,7 @@
 """Reusable PyAEDT builder for a single differential pair in a PCB stackup."""
 
-# Developer: 39004628 / Luxshare
-# Copyright © 2026 39004628 / Luxshare. All rights reserved.
+# Developer: Yetaikunle
+# Copyright © 2026 Yetaikunle. All rights reserved.
 
 from __future__ import annotations
 

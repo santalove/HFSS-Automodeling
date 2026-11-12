@@ -7,8 +7,8 @@ is opened or reused.  The eight-layer template is only the initial/default
 configuration; JSON import is the supported persisted stackup input.
 """
 
-# Developer: 39004628 / Luxshare
-# Copyright © 2026 39004628 / Luxshare. All rights reserved.
+# Developer: Yetaikunle
+# Copyright © 2026 Yetaikunle. All rights reserved.
 
 from __future__ import annotations
 
