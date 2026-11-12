@@ -41,3 +41,8 @@ AI study/
 # 仅本机分析使用，不属于源码，不纳入版本库
 /RLC_design_spec.json
 /read_rlc_design.py
+
+# ===== 一次性 AEDT 操作脚本 =====
+# 临时调试/改模型的脚本不属于源码，不入库；约定的存放目录为 aedt_scripts
+/set_via_antipad_200um.py
+aedt_scripts/
