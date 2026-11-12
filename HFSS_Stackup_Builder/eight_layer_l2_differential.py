@@ -1,7 +1,7 @@
 """使用 PyAEDT 建立八层板 L2 差分走线模型。
 
 运行环境：
-    C:\\Users\\39004628\\conda_envs\\hfss_env\\python.exe
+    已安装 PyAEDT 的 Python 解释器（例如 conda 环境）
 
 本脚本只创建模型、端口和求解设置，不自动求解。叠层厚度、材料 DK/DF、
 信号层和 W/S/G 均集中在文件开头，便于后续修改。

@@ -6,7 +6,7 @@ Copyright © 2026 Yetaikunle. All rights reserved.
 使用已安装 PyAEDT 的环境启动 GUI：
 
 ```powershell
-C:\Users\39004628\conda_envs\hfss_env\python.exe "E:\PYTHON\Automodeling\HFSS_Stackup_Builder\hfss_stackup_gui.py"
+python hfss_stackup_gui.py
 ```
 
 ## EXE 发布包
