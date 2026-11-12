@@ -357,8 +357,6 @@ def _validate(
 ) -> tuple[Layer, Layer, Layer, dict[str, float]]:
     if len(config.route_layers) != 2:
         raise ValueError("route_layers must contain input and output copper layers.")
-    if config.route_layers[0] == config.route_layers[1]:
-        raise ValueError("Input and output route layers must be different.")
     if len({layer.name for layer in stackup.layers}) != len(stackup.layers):
         raise ValueError("Stackup layer names must be unique.")
     copper = [layer for layer in stackup.layers if layer.kind == "copper"]
