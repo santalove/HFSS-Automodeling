@@ -1255,6 +1255,8 @@ class MainWindow(QMainWindow):
         self.cap_reference_combos = {}
         self.cap_mechanical_checks = {}
         self.cap_mechanical_combos = {}
+        self.cap_dogleg_checks = {}
+        self.cap_dogleg_combos = {}
         for side, title in (("input", "Left / L3"), ("output", "Right / L5")):
             group = QGroupBox(f"{title} line and signal VIA")
             side_form = QFormLayout(group)
@@ -1284,6 +1286,19 @@ class MainWindow(QMainWindow):
                 combo = NoWheelComboBox(); combo.currentTextChanged.connect(self.on_editor_changed)
                 stages[position] = combo
                 side_form.addRow(f"Mechanical {position} copper", combo)
+            dogleg = QCheckBox("Dogleg: laser stops on an inner layer, mechanical span shifts sideways")
+            dogleg.toggled.connect(self.on_editor_changed)
+            self.cap_dogleg_checks[side] = dogleg
+            side_form.addRow(dogleg)
+            dogleg_layer = NoWheelComboBox()
+            dogleg_layer.currentTextChanged.connect(self.on_editor_changed)
+            self.cap_dogleg_combos[side] = dogleg_layer
+            side_form.addRow("Dogleg layer (= mechanical start)", dogleg_layer)
+            for key, label in (("dogleg_length", "Dogleg length (outward)"),
+                               ("dogleg_width", "Dogleg trace width"),
+                               ("dogleg_clearance", "Dogleg clearance")):
+                edit = QLineEdit(); edit.textChanged.connect(self.on_editor_changed)
+                via_fields[key] = edit; side_form.addRow(label, edit)
             self.cap_line_fields[side] = line_fields
             self.cap_reference_combos[side] = refs
             self.cap_via_fields[side] = via_fields
@@ -1468,6 +1483,15 @@ class MainWindow(QMainWindow):
                     self.cap_mechanical_combos[side][position], ["", via.__dict__.get(f"mechanical_{position}_layer", "")],
                     getattr(via, f"mechanical_{position}_layer"),
                 )
+            self.cap_dogleg_checks[side].setChecked(via.dogleg_enabled)
+            self._set_combo_choices(
+                self.cap_dogleg_combos[side],
+                [""] + [layer.name for layer in self.config.layers if layer.kind == "copper"],
+                via.dogleg_layer,
+            )
+            for key in ("dogleg_length", "dogleg_width", "dogleg_clearance"):
+                self.cap_via_fields[side][key].setEnabled(via.dogleg_enabled)
+            self.cap_dogleg_combos[side].setEnabled(via.dogleg_enabled and via.mechanical_enabled)
             for direction in ("upper", "lower"):
                 value = getattr(line, f"{direction}_reference_layer_name")
                 self._set_combo_choices(self.cap_reference_combos[side][direction], ["", value], value)
@@ -1509,6 +1533,16 @@ class MainWindow(QMainWindow):
                 value = combo.currentText() or getattr(via, f"mechanical_{stage}_layer")
                 self._set_combo_choices(combo, [""] + path, value)
                 combo.setEnabled(self.cap_mechanical_checks[side].isChecked())
+            dogleg_combo = self.cap_dogleg_combos[side]
+            inner_path = path[1:-1]
+            dogleg_value = dogleg_combo.currentText() or via.dogleg_layer
+            if dogleg_value not in inner_path:
+                dogleg_value = self.cap_mechanical_combos[side]["start"].currentText()
+            self._set_combo_choices(dogleg_combo, [""] + inner_path, dogleg_value)
+            dogleg_on = self.cap_dogleg_checks[side].isChecked()
+            dogleg_combo.setEnabled(dogleg_on and self.cap_mechanical_checks[side].isChecked())
+            for key in ("dogleg_length", "dogleg_width", "dogleg_clearance"):
+                self.cap_via_fields[side][key].setEnabled(dogleg_on)
         self._refresh_cap_void_table(copper)
         self._refresh_cap_antipad_table(copper)
         try:
@@ -1788,6 +1822,11 @@ class MainWindow(QMainWindow):
                     first, last = sorted((copper.index(start), copper.index(end)))
                     for layer_name in copper[first:last + 1]:
                         annotations[layer_name].append(f"{label} MECH SPAN")
+            if self.cap_dogleg_checks[side].isChecked():
+                dogleg_layer = self.cap_dogleg_combos[side].currentText()
+                length = self.cap_via_fields[side]["dogleg_length"].text().strip()
+                if dogleg_layer in annotations:
+                    annotations[dogleg_layer].append(f"{label} DOGLEG OUT {length}")
         preview_layers = [Layer.from_dict(vars(layer)) for layer in layers]
         for layer in preview_layers:
             if layer.kind == "copper":
@@ -2236,6 +2275,11 @@ class MainWindow(QMainWindow):
             via["mechanical_enabled"] = self.cap_mechanical_checks[side].isChecked()
             for position in ("start", "end"):
                 via[f"mechanical_{position}_layer"] = self.cap_mechanical_combos[side][position].currentText()
+            via["dogleg_enabled"] = self.cap_dogleg_checks[side].isChecked()
+            via["dogleg_layer"] = (
+                self.cap_dogleg_combos[side].currentText()
+                or self.cap_mechanical_combos[side]["start"].currentText()
+            )
             radius_col, x_col = (1, 2) if side == "input" else (3, 4)
             via["layer_antipads"] = {
                 self.cap_antipad_table.item(row, 0).text(): {

@@ -75,6 +75,14 @@ class CapViaConfig:
     mechanical_end_layer: str = ""
     mechanical_column_radius: str = "0.075mm"
     mechanical_pad_radius: str = "0.15mm"
+    # Optional dogleg: the laser stack stops on an inner layer, a short trace
+    # pulls the mechanical span sideways, and the mechanical span continues
+    # from that offset axis down to the route layer.
+    dogleg_enabled: bool = False
+    dogleg_layer: str = ""
+    dogleg_length: str = "0mm"
+    dogleg_width: str = "0.10mm"
+    dogleg_clearance: str = "0.05mm"
 
     def __post_init__(self) -> None:
         normalized = {}
@@ -93,6 +101,7 @@ class CapViaConfig:
         values = {key: data[key] for key in cls.__dataclass_fields__ if key in data}
         values["follow_solder_mask_antipad"] = False
         values["mechanical_enabled"] = str(values.get("mechanical_enabled", False)).lower() in {"true", "1", "yes", "on"}
+        values["dogleg_enabled"] = str(values.get("dogleg_enabled", False)).lower() in {"true", "1", "yes", "on"}
         if "layer_antipads" in values:
             normalized = {}
             for key, value in values["layer_antipads"].items():
@@ -459,6 +468,46 @@ def _validate(
                 raise ValueError(f"{side} mechanical span must lie between L1 and its route layer in order.")
             if dimensions[f"{side}_mechanical_pad_radius"] <= dimensions[f"{side}_mechanical_column_radius"]:
                 raise ValueError(f"{side} mechanical_pad_radius must exceed mechanical_column_radius.")
+        dogleg_length = _literal_mm(str(via.dogleg_length), f"{side}_dogleg_length")
+        dogleg_width = _literal_mm(str(via.dogleg_width), f"{side}_dogleg_width")
+        dogleg_clearance = _literal_mm(str(via.dogleg_clearance), f"{side}_dogleg_clearance")
+        if via.dogleg_enabled:
+            if not via.mechanical_enabled:
+                raise ValueError(
+                    f"{side} dogleg places the mechanical span on an offset axis and "
+                    "therefore requires an enabled mechanical span."
+                )
+            if via.dogleg_layer != via.mechanical_start_layer:
+                raise ValueError(f"{side} dogleg_layer must equal mechanical_start_layer.")
+            names = [item.name for item in via_path]
+            if via.dogleg_layer not in names:
+                raise ValueError(
+                    f"{side} dogleg layer must lie on the mounting-to-route via path."
+                )
+            if names.index(via.dogleg_layer) in {0, len(names) - 1}:
+                raise ValueError(
+                    f"{side} dogleg layer must be an inner copper layer between the "
+                    "mounting layer and the route layer."
+                )
+            if dogleg_length <= 0:
+                raise ValueError(f"{side}_dogleg_length must be positive when the dogleg is enabled.")
+            if dogleg_width <= 0:
+                raise ValueError(f"{side}_dogleg_width must be positive.")
+            if dogleg_width >= 2 * dimensions[f"{side}_pad_radius"]:
+                raise ValueError(
+                    f"{side}_dogleg_width must stay narrower than the laser landing pad diameter."
+                )
+            if dogleg_width > dimensions[f"{side}_mechanical_pad_radius"] * 2:
+                raise ValueError(
+                    f"{side}_dogleg_width must not exceed the mechanical pad diameter."
+                )
+        else:
+            dogleg_length = 0.0
+        if dogleg_clearance < 0:
+            raise ValueError(f"{side}_dogleg_clearance must be non-negative.")
+        dimensions[f"{side}_dogleg_length"] = dogleg_length
+        dimensions[f"{side}_dogleg_width"] = dogleg_width
+        dimensions[f"{side}_dogleg_clearance"] = dogleg_clearance
     dimensions["input_route_antipad_radius"] = dimensions[f"input_antipad_{selected[0].name}"]
     dimensions["output_route_antipad_radius"] = dimensions[f"output_antipad_{selected[1].name}"]
     if not config.solder_material.strip():
@@ -589,6 +638,10 @@ def _validate(
                     "inside the component pad length when breakout length is zero."
                 )
         d_key = "input_d_via" if side == "left" else "output_d_via"
+        dimensions[f"{side}_dogleg_x"] = (
+            dimensions[f"{side}_via_x"]
+            + direction * dimensions[f"{prefix}_dogleg_length"]
+        )
         symmetric_y_offset = (
             dimensions[d_key] - dimensions["pair_pitch"]
         ) / 2
@@ -625,9 +678,13 @@ def _validate(
         "pad_clearance", "return_via_clearance", "solder_mask_df",
         "solder_mask_opening_expansion", "lumped_resistance_ohm",
         "lumped_inductance_h", "left_breakout_length", "right_breakout_length",
+        "left_dogleg_length", "right_dogleg_length",
+        "input_dogleg_length", "output_dogleg_length",
+        "left_dogleg_clearance", "right_dogleg_clearance",
+        "input_dogleg_clearance", "output_dogleg_clearance",
     }
     for name, value in dimensions.items():
-        if name.endswith(("_via_x_offset", "_window_x0", "_via_x")):
+        if name.endswith(("_via_x_offset", "_window_x0", "_via_x", "_dogleg_x")):
             continue
         if value < 0 or (value == 0 and name not in nonnegative):
             rule = "non-negative" if name in nonnegative else "positive"
@@ -1090,11 +1147,11 @@ def _subtract_rounded_cap_void(
 
 def _subtract_cap_slot_antipad(
     hfss: Hfss, ground: object, prefix: str, layer: Layer,
-    x_center: str, z0: str, height: str,
+    x_center: str, z0: str, height: str, name_suffix: str = "",
 ) -> None:
     """Cut one connected P/N slot using this side's per-layer R and +/-X."""
     suffix = _identifier(layer.name).upper()
-    name = f"CAP_{prefix}_{suffix}_SIG_SLOT_ANTIPAD"
+    name = f"CAP_{prefix}_{suffix}{name_suffix}_SIG_SLOT_ANTIPAD"
     slot = _create_cap_slot_prism(
         hfss, name, prefix, suffix, x_center, z0, height, "vacuum",
     )
@@ -1365,6 +1422,42 @@ def _line_geometry(
             raise RuntimeError(f"Unable to unite {p} route {side}.")
 
 
+def _create_dogleg_copper(
+    hfss: Hfss, prefix: str, layer: Layer, record: dict[str, object],
+    side: str, y: str, x_inner: str, x_outer: str,
+) -> object:
+    """Create the short trace that joins the laser axis to the mechanical axis."""
+    p = prefix.upper()
+    origin_x = x_outer if prefix == "INPUT" else x_inner
+    obj = hfss.modeler.create_box(
+        [origin_x, f"({y})-CAP_{p}_DOGLE_WIDTH/2", record["z_origin"]],
+        [f"CAP_{p}_DOGLE_LENGTH", f"CAP_{p}_DOGLE_WIDTH", _h(layer)],
+        name=f"CAP_{p}_DOGLE_{side}", material="copper",
+    )
+    if not obj:
+        raise RuntimeError(f"Unable to create {p} dogleg trace {side} on {layer.name}.")
+    return obj
+
+
+def _subtract_dogleg_channel(
+    hfss: Hfss, prefix: str, layer: Layer, record: dict[str, object],
+    side: str, y: str, x_inner: str, x_outer: str,
+) -> None:
+    """Clear the same-layer reference copper along the dogleg trace."""
+    p = prefix.upper()
+    radius_expr = f"CAP_{p}_DOGLE_WIDTH/2+CAP_{p}_DOGLE_CLEARANCE"
+    origin_x = x_outer if prefix == "INPUT" else x_inner
+    void = hfss.modeler.create_box(
+        [origin_x, f"({y})-({radius_expr})", record["z_origin"]],
+        [f"CAP_{p}_DOGLE_LENGTH", f"CAP_{p}_DOGLE_WIDTH+2*CAP_{p}_DOGLE_CLEARANCE", _h(layer)],
+        name=f"CAP_{p}_DOGLE_CHANNEL_{side}", material="vacuum",
+    )
+    if not void:
+        raise RuntimeError(f"Unable to create {p} dogleg channel {side} on {layer.name}.")
+    if not hfss.modeler.subtract(record["ground"], void, keep_originals=False):
+        raise RuntimeError(f"Unable to subtract {p} dogleg channel {side} on {layer.name}.")
+
+
 def _via_stack(
     hfss: Hfss,
     stackup: StackupConfig,
@@ -1373,26 +1466,48 @@ def _via_stack(
     top: Layer,
     route: Layer,
     prefix: str,
-    x: str,
+    x_laser: str,
+    x_lower: str,
     via_config: CapViaConfig,
 ) -> None:
+    """Build the laser stack, optional dogleg, and mechanical span of one side.
+
+    ``x_laser`` is the axis shared with the capacitor pad.  ``x_lower`` is the
+    axis of everything at and below the dogleg layer.  Both are identical when
+    the dogleg is disabled, which reproduces the single-axis stack.
+    """
     m = hfss.modeler
     path = _copper_path(stackup, top, route)
     if len(path) < 2:
         return
-    mechanical_start = path.index(next(item for item in path if item.name == via_config.mechanical_start_layer)) if via_config.mechanical_enabled else -1
-    mechanical_end = path.index(next(item for item in path if item.name == via_config.mechanical_end_layer)) if via_config.mechanical_enabled else -1
-    segments = [(path[index], path[index + 1], False) for index in range(mechanical_start)] if via_config.mechanical_enabled else []
-    if via_config.mechanical_enabled:
-        segments.append((path[mechanical_start], path[mechanical_end], True))
-        segments += [(path[index], path[index + 1], False) for index in range(mechanical_end, len(path) - 1)]
+    mechanical = via_config.mechanical_enabled
+    dogleg = via_config.dogleg_enabled
+    mechanical_start = -1
+    mechanical_end = -1
+    if mechanical:
+        mechanical_start = path.index(
+            next(item for item in path if item.name == via_config.mechanical_start_layer)
+        )
+        mechanical_end = path.index(
+            next(item for item in path if item.name == via_config.mechanical_end_layer)
+        )
+    segments: list[tuple[Layer, Layer, bool, str]] = []
+    if mechanical:
+        for index in range(mechanical_start):
+            segments.append((path[index], path[index + 1], False, x_laser))
+        segments.append((path[mechanical_start], path[mechanical_end], True, x_lower))
+        for index in range(mechanical_end, len(path) - 1):
+            segments.append((path[index], path[index + 1], False, x_lower))
     else:
-        segments = [(first, second, False) for first, second in zip(path, path[1:])]
+        for first, second in zip(path, path[1:]):
+            segments.append((first, second, False, x_laser))
     intermediate = {layer.name for layer in path[1:-1]}
-    if via_config.mechanical_enabled:
+    if mechanical:
         intermediate -= {item.name for item in path[mechanical_start + 1:mechanical_end]}
+    dogleg_layer_name = via_config.dogleg_layer if dogleg else ""
     for side, y in (("P", f"CAP_{prefix}_P_VIA_Y"), ("N", f"CAP_{prefix}_N_VIA_Y")):
-        for first, second, mechanical in segments:
+        dogleg_pads: list[object] = []
+        for first, second, is_mechanical, x in segments:
             shallow, deep = sorted((first, second), key=stackup.layers.index)
             shallow_origin = _origin(bottom_up, shallow.name)
             deep_origin = _origin(bottom_up, deep.name)
@@ -1400,7 +1515,7 @@ def _via_stack(
             name = f"CAP_{prefix}_VIA_{side}_{_identifier(first.name)}_{_identifier(second.name)}_COLUMN"
             column = m.create_cylinder(
                 "Z", [x, y, deep_origin],
-                f"CAP_{prefix}_MECHANICAL_COLUMN_RADIUS" if mechanical else f"CAP_{prefix}_VIA_COLUMN_RADIUS",
+                f"CAP_{prefix}_MECHANICAL_COLUMN_RADIUS" if is_mechanical else f"CAP_{prefix}_VIA_COLUMN_RADIUS",
                 height,
                 name=name, material="copper",
             )
@@ -1409,17 +1524,46 @@ def _via_stack(
         for layer in path[1:-1]:
             if layer.name not in intermediate:
                 continue
-            mech_pad = via_config.mechanical_enabled and layer.name in {
+            if dogleg and layer.name == dogleg_layer_name:
+                # The laser column ends here and the mechanical column starts
+                # on a second axis; both need their own landing pad.
+                for pad_name, pad_x, pad_radius in (
+                    (f"CAP_{prefix}_VIA_{side}_{_identifier(layer.name)}_PAD", x_laser,
+                     f"CAP_{prefix}_VIA_PAD_RADIUS"),
+                    (f"CAP_{prefix}_VIA_{side}_{_identifier(layer.name)}_MECH_PAD", x_lower,
+                     f"CAP_{prefix}_MECHANICAL_PAD_RADIUS"),
+                ):
+                    pad = m.create_cylinder(
+                        "Z", [pad_x, y, records[layer.name]["z_origin"]],
+                        pad_radius, _h(layer), name=pad_name, material="copper",
+                    )
+                    if not pad:
+                        raise RuntimeError(f"Unable to create {pad_name}.")
+                    dogleg_pads.append(pad)
+                continue
+            mech_pad = mechanical and layer.name in {
                 via_config.mechanical_start_layer, via_config.mechanical_end_layer,
             }
+            pad_x = x_lower if (dogleg and path.index(layer) >= mechanical_start) else x_laser
             pad = m.create_cylinder(
-                "Z", [x, y, records[layer.name]["z_origin"]],
+                "Z", [pad_x, y, records[layer.name]["z_origin"]],
                 f"CAP_{prefix}_MECHANICAL_PAD_RADIUS" if mech_pad else f"CAP_{prefix}_VIA_PAD_RADIUS",
                 _h(layer),
                 name=f"CAP_{prefix}_VIA_{side}_{_identifier(layer.name)}_PAD", material="copper",
             )
             if not pad:
                 raise RuntimeError(f"Unable to create intermediate pad on {layer.name}.")
+        if dogleg:
+            dogleg_layer = next(item for item in path if item.name == dogleg_layer_name)
+            record = records[dogleg_layer.name]
+            trace = _create_dogleg_copper(
+                hfss, prefix, dogleg_layer, record, side, y, x_laser, x_lower,
+            )
+            _subtract_dogleg_channel(
+                hfss, prefix, dogleg_layer, record, side, y, x_laser, x_lower,
+            )
+            if dogleg_pads and trace and not m.unite([trace] + dogleg_pads):
+                raise RuntimeError(f"Unable to unite {prefix.upper()} dogleg {side}.")
 
 
 def _sample_edge(start: float, stop: float, pitch: float) -> list[float]:
@@ -1445,8 +1589,10 @@ def _line_return_points(dimensions: dict[str, float]) -> list[tuple[float, float
     pitch = dimensions["return_via_pitch"]
     via_radius = dimensions["return_column_radius"]
     clearance = dimensions["return_via_clearance"]
-    left_via_x = dimensions["left_via_x"]
-    right_via_x = dimensions["right_via_x"]
+    # The fence must reach past the outermost signal VIA axis, which is the
+    # dogleg (mechanical) axis whenever one is present.
+    left_via_x = min(dimensions["left_via_x"], dimensions["left_dogleg_x"])
+    right_via_x = max(dimensions["right_via_x"], dimensions["right_dogleg_x"])
     board_x0 = left_via_x - dimensions["input_fanout_length"] - dimensions["input_trace_length"]
     board_x1 = right_via_x + dimensions["output_fanout_length"] + dimensions["output_trace_length"]
     edge_inset = via_radius + clearance
@@ -1468,8 +1614,8 @@ def _return_point_has_board_edge_margin(
     point: tuple[float, float], dimensions: dict[str, float]
 ) -> bool:
     """Keep a return-VIA edge plus clearance inside every copper plane."""
-    left_via_x = dimensions["left_via_x"]
-    right_via_x = dimensions["right_via_x"]
+    left_via_x = min(dimensions["left_via_x"], dimensions["left_dogleg_x"])
+    right_via_x = max(dimensions["right_via_x"], dimensions["right_dogleg_x"])
     board_x0 = (
         left_via_x
         - dimensions["input_fanout_length"]
@@ -1534,6 +1680,27 @@ def _return_point_intersects_void(
 ) -> bool:
     """True when a return-via disk overlaps any pad, slot, or route void."""
     via_radius = dimensions["return_column_radius"]
+
+    # A dogleg sweeps the signal column from the laser axis across to the
+    # mechanical axis; treat that swept corridor plus both end slots as
+    # occupied so a through return via can never land inside it.
+    for prefix, x_inner, x_outer, d_via in (
+        ("input", dimensions["left_via_x"], dimensions["left_dogleg_x"], dimensions["input_d_via"]),
+        ("output", dimensions["right_via_x"], dimensions["right_dogleg_x"], dimensions["output_d_via"]),
+    ):
+        if abs(x_outer - x_inner) < 1e-12:
+            continue
+        x0, x1 = sorted((x_inner, x_outer))
+        slot_radius = max(
+            value for key, value in dimensions.items()
+            if key.startswith(f"{prefix}_antipad_")
+            and not key.startswith(f"{prefix}_antipad_x")
+        )
+        if _distance_to_rectangle(
+            point, x0 - slot_radius, x1 + slot_radius,
+            -d_via / 2 - slot_radius, d_via / 2 + slot_radius,
+        ) < via_radius:
+            return True
 
     # Layer-specific rounded rectangles centred on the complete four-pad group.
     for layer, settings in config.layer_pad_voids.items():
@@ -1841,6 +2008,14 @@ def _build_geometry(hfss: Hfss, stackup: StackupConfig, config: CapPadConfig) ->
         if dimensions["right_breakout_length"] > 0
         else f"CAP_RIGHT_PAD_CENTER_X+{_mm(dimensions['right_via_x_offset'])}"
     )
+    for prefix, side in (("INPUT", "left"), ("OUTPUT", "right")):
+        hfss[f"CAP_{prefix}_DOGLE_LENGTH"] = _mm(dimensions[f"{prefix.lower()}_dogleg_length"])
+        hfss[f"CAP_{prefix}_DOGLE_WIDTH"] = _mm(dimensions[f"{prefix.lower()}_dogleg_width"])
+        hfss[f"CAP_{prefix}_DOGLE_CLEARANCE"] = _mm(dimensions[f"{prefix.lower()}_dogleg_clearance"])
+    # The dogleg axis is the route-side axis; it collapses onto the laser axis
+    # whenever the dogleg length is zero.
+    hfss["CAP_LEFT_VIA_X2"] = "CAP_LEFT_VIA_X-CAP_INPUT_DOGLE_LENGTH"
+    hfss["CAP_RIGHT_VIA_X2"] = "CAP_RIGHT_VIA_X+CAP_OUTPUT_DOGLE_LENGTH"
     board_width = dimensions["pair_pitch"] + max(dimensions["left_pad_width"], dimensions["right_pad_width"]) + 2 * dimensions["side_margin"]
     hfss["CAP_BOARD_WIDTH"] = _mm(board_width)
     hfss["CAP_BOARD_CENTER_Y"] = "CAP_BOARD_WIDTH/2"
@@ -1850,8 +2025,8 @@ def _build_geometry(hfss: Hfss, stackup: StackupConfig, config: CapPadConfig) ->
     hfss["CAP_INPUT_N_VIA_Y"] = "CAP_BOARD_CENTER_Y+CAP_INPUT_D_VIA/2"
     hfss["CAP_OUTPUT_P_VIA_Y"] = "CAP_BOARD_CENTER_Y-CAP_OUTPUT_D_VIA/2"
     hfss["CAP_OUTPUT_N_VIA_Y"] = "CAP_BOARD_CENTER_Y+CAP_OUTPUT_D_VIA/2"
-    hfss["CAP_BOARD_X0"] = "CAP_LEFT_VIA_X-CAP_INPUT_FANOUT_LENGTH-CAP_INPUT_TRACE_LENGTH"
-    hfss["CAP_BOARD_X1"] = "CAP_RIGHT_VIA_X+CAP_OUTPUT_FANOUT_LENGTH+CAP_OUTPUT_TRACE_LENGTH"
+    hfss["CAP_BOARD_X0"] = "CAP_LEFT_VIA_X2-CAP_INPUT_FANOUT_LENGTH-CAP_INPUT_TRACE_LENGTH"
+    hfss["CAP_BOARD_X1"] = "CAP_RIGHT_VIA_X2+CAP_OUTPUT_FANOUT_LENGTH+CAP_OUTPUT_TRACE_LENGTH"
     hfss["CAP_BOARD_LENGTH"] = "CAP_BOARD_X1-CAP_BOARD_X0"
     hfss["CAP_BOARD_THICKNESS"] = "+".join(_h(layer) for layer in bottom_up)
     hfss["CAP_INPUT_PORT_WIDTH"] = "CAP_INPUT_S_LINE+4*CAP_INPUT_W_LINE+6*CAP_INPUT_G_LINE"
@@ -1910,36 +2085,51 @@ def _build_geometry(hfss: Hfss, stackup: StackupConfig, config: CapPadConfig) ->
             )
 
     paths = {
-        "INPUT": (input_layer, "CAP_LEFT_VIA_X", config.input_via),
-        "OUTPUT": (output_layer, "CAP_RIGHT_VIA_X", config.output_via),
+        "INPUT": (input_layer, "CAP_LEFT_VIA_X", "CAP_LEFT_VIA_X2", config.input_via),
+        "OUTPUT": (output_layer, "CAP_RIGHT_VIA_X", "CAP_RIGHT_VIA_X2", config.output_via),
     }
     # Each left/right via stack has its own connected P/N slot on every copper
-    # layer in its path. Radius and +/-X can be overridden independently.
-    for prefix, (route, x, via) in paths.items():
-        for layer in _copper_path(stackup, component_layer, route):
+    # layer in its path. Radius and +/-X can be overridden independently.  A
+    # dogleg moves everything at and below its layer onto the shifted axis.
+    for prefix, (route, x_laser, x_lower, via) in paths.items():
+        path = _copper_path(stackup, component_layer, route)
+        dogleg_index = -1
+        if via.dogleg_enabled:
+            dogleg_index = path.index(
+                next(item for item in path if item.name == via.dogleg_layer)
+            )
+        for index, layer in enumerate(path):
             record = records[layer.name]
+            seg_x = x_lower if (dogleg_index >= 0 and index >= dogleg_index) else x_laser
             _subtract_cap_slot_antipad(
-                hfss, record["ground"], prefix, layer, x,
+                hfss, record["ground"], prefix, layer, seg_x,
                 record["z_origin"], _h(layer),
             )
+            if index == dogleg_index:
+                # The laser column lands on this layer, so its own slot stays
+                # on the pad axis in addition to the shifted one.
+                _subtract_cap_slot_antipad(
+                    hfss, record["ground"], prefix, layer, x_laser,
+                    record["z_origin"], _h(layer), name_suffix="_PAD",
+                )
 
     _subtract_route_clearance(
-        hfss, records[input_layer.name]["ground"], "input", -1, "CAP_LEFT_VIA_X",
+        hfss, records[input_layer.name]["ground"], "input", -1, "CAP_LEFT_VIA_X2",
         records[input_layer.name]["z_origin"], _h(input_layer),
         f"CAP_INPUT_VIA_ANTIPAD_RADIUS_{_identifier(input_layer.name)}",
     )
     _subtract_route_clearance(
-        hfss, records[output_layer.name]["ground"], "output", 1, "CAP_RIGHT_VIA_X",
+        hfss, records[output_layer.name]["ground"], "output", 1, "CAP_RIGHT_VIA_X2",
         records[output_layer.name]["z_origin"], _h(output_layer),
         f"CAP_OUTPUT_VIA_ANTIPAD_RADIUS_{_identifier(output_layer.name)}",
     )
     _subtract_line_reference_clearances(
         hfss, stackup, records, input_layer, config.input_line,
-        "input", -1, "CAP_LEFT_VIA_X",
+        "input", -1, "CAP_LEFT_VIA_X2",
     )
     _subtract_line_reference_clearances(
         hfss, stackup, records, output_layer, config.output_line,
-        "output", 1, "CAP_RIGHT_VIA_X",
+        "output", 1, "CAP_RIGHT_VIA_X2",
     )
 
     # The four primary objects intentionally remain separate from via columns.
@@ -1990,17 +2180,23 @@ def _build_geometry(hfss: Hfss, stackup: StackupConfig, config: CapPadConfig) ->
     )
 
     _line_geometry(
-        hfss, "input", -1, "CAP_LEFT_VIA_X", records[input_layer.name]["z_origin"],
+        hfss, "input", -1, "CAP_LEFT_VIA_X2", records[input_layer.name]["z_origin"],
         _h(input_layer), colors[input_layer.name],
         "CAP_INPUT_MECHANICAL_PAD_RADIUS" if config.input_via.mechanical_enabled and config.input_via.mechanical_end_layer == input_layer.name else None,
     )
     _line_geometry(
-        hfss, "output", 1, "CAP_RIGHT_VIA_X", records[output_layer.name]["z_origin"],
+        hfss, "output", 1, "CAP_RIGHT_VIA_X2", records[output_layer.name]["z_origin"],
         _h(output_layer), colors[output_layer.name],
         "CAP_OUTPUT_MECHANICAL_PAD_RADIUS" if config.output_via.mechanical_enabled and config.output_via.mechanical_end_layer == output_layer.name else None,
     )
-    _via_stack(hfss, stackup, bottom_up, records, component_layer, input_layer, "INPUT", "CAP_LEFT_VIA_X", config.input_via)
-    _via_stack(hfss, stackup, bottom_up, records, component_layer, output_layer, "OUTPUT", "CAP_RIGHT_VIA_X", config.output_via)
+    _via_stack(
+        hfss, stackup, bottom_up, records, component_layer, input_layer, "INPUT",
+        "CAP_LEFT_VIA_X", "CAP_LEFT_VIA_X2", config.input_via,
+    )
+    _via_stack(
+        hfss, stackup, bottom_up, records, component_layer, output_layer, "OUTPUT",
+        "CAP_RIGHT_VIA_X", "CAP_RIGHT_VIA_X2", config.output_via,
+    )
 
     if config.return_vias_enabled:
         for index, (x, y) in enumerate(_all_return_points(dimensions, config), 1):

@@ -748,6 +748,79 @@ class CapPadModelTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, message):
                     cap_model._validate(self.stackup, config)
 
+    def _dogleg_config(self, **overrides):
+        via = cap_model.CapViaConfig(
+            mechanical_enabled=True,
+            mechanical_start_layer="L2",
+            mechanical_end_layer="L3",
+            dogleg_enabled=True,
+            dogleg_layer="L2",
+            dogleg_length="0.4mm",
+            dogleg_width="0.10mm",
+            dogleg_clearance="0.05mm",
+        )
+        for key, value in overrides.items():
+            setattr(via, key, value)
+        return cap_model.CapPadConfig(input_via=via)
+
+    def test_dogleg_puts_mechanical_span_on_a_second_axis(self):
+        config = self._dogleg_config()
+        dimensions = cap_model._validate(self.stackup, config)[3]
+        self.assertAlmostEqual(0.4, dimensions["input_dogleg_length"])
+        self.assertAlmostEqual(
+            dimensions["left_via_x"] - 0.4, dimensions["left_dogleg_x"]
+        )
+        hfss = self._build(config)
+        names = set(hfss.modeler.created)
+        self.assertIn("CAP_INPUT_DOGLE_P", names)
+        self.assertIn("CAP_INPUT_DOGLE_N", names)
+        self.assertIn("CAP_INPUT_DOGLE_CHANNEL_P", names)
+        self.assertIn("CAP_INPUT_VIA_P_L2_PAD", names)
+        self.assertIn("CAP_INPUT_VIA_P_L2_MECH_PAD", names)
+        self.assertNotIn("CAP_OUTPUT_DOGLE_P", names)
+        self.assertEqual("CAP_LEFT_VIA_X-CAP_INPUT_DOGLE_LENGTH", hfss.variables["CAP_LEFT_VIA_X2"])
+        self.assertEqual("CAP_RIGHT_VIA_X+CAP_OUTPUT_DOGLE_LENGTH", hfss.variables["CAP_RIGHT_VIA_X2"])
+        self.assertEqual("0.4mm", hfss.variables["CAP_INPUT_DOGLE_LENGTH"])
+        self.assertEqual("0mm", hfss.variables["CAP_OUTPUT_DOGLE_LENGTH"])
+        channel = [
+            entry for entry in hfss.modeler.subtractions
+            if entry[1] == "CAP_INPUT_DOGLE_CHANNEL_P"
+        ]
+        self.assertEqual("CAP_GND_L2", channel[0][0])
+        self.assertTrue(any(
+            {"CAP_INPUT_DOGLE_P", "CAP_INPUT_VIA_P_L2_MECH_PAD", "CAP_INPUT_VIA_P_L2_PAD"}
+            <= {getattr(item, "name", str(item)) for item in group}
+            for group in hfss.modeler.unions
+        ))
+        # Everything at and below the dogleg layer leaves the laser axis.
+        column = hfss.modeler.cylinder_args["CAP_INPUT_VIA_P_L2_L3_COLUMN"]
+        self.assertEqual("CAP_LEFT_VIA_X2", column[1][0])
+        self.assertEqual("CAP_INPUT_P_VIA_Y", column[1][1])
+        laser = hfss.modeler.cylinder_args["CAP_INPUT_VIA_P_L1_L2_COLUMN"]
+        self.assertEqual("CAP_LEFT_VIA_X", laser[1][0])
+
+    def test_dogleg_variables_are_ignored_when_disabled(self):
+        config = self._dogleg_config(dogleg_enabled=False)
+        hfss = self._build(config)
+        names = set(hfss.modeler.created)
+        self.assertNotIn("CAP_INPUT_DOGLE_P", names)
+        self.assertNotIn("CAP_INPUT_VIA_P_L2_MECH_PAD", names)
+        self.assertEqual("0mm", hfss.variables["CAP_INPUT_DOGLE_LENGTH"])
+
+    def test_invalid_dogleg_geometry_is_rejected(self):
+        cases = (
+            ({"mechanical_enabled": False}, "requires an enabled mechanical span"),
+            ({"dogleg_layer": "L4"}, "dogleg_layer must equal mechanical_start_layer"),
+            ({"dogleg_layer": "L1"}, "must equal mechanical_start_layer|inner copper layer"),
+            ({"dogleg_length": "0mm"}, "dogleg_length must be positive"),
+            ({"dogleg_width": "0.30mm"}, "dogleg_width must stay narrower"),
+            ({"dogleg_clearance": "-0.01mm"}, "dogleg_clearance must be non-negative"),
+        )
+        for overrides, message in cases:
+            with self.subTest(message=message):
+                with self.assertRaisesRegex(ValueError, message):
+                    cap_model._validate(self.stackup, self._dogleg_config(**overrides))
+
 
 if __name__ == "__main__":
     unittest.main()
