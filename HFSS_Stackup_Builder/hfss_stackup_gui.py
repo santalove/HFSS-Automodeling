@@ -1296,7 +1296,12 @@ class MainWindow(QMainWindow):
             side_form.addRow("Dogleg layer (laser ends here)", dogleg_layer)
             for key, label in (("dogleg_length", "Dogleg length (outward)"),
                                ("dogleg_width", "Dogleg trace width"),
-                               ("dogleg_clearance", "Dogleg clearance")):
+                               ("dogleg_clearance", "Dogleg clearance"),
+                               ("dogleg_d_via", "Dogleg D_VIA (P/N spacing)"),
+                               ("dogleg_column_radius", "Dogleg copper-column radius"),
+                               ("dogleg_pad_radius", "Dogleg landing-pad radius"),
+                               ("dogleg_antipad_radius", "Dogleg anti-pad radius"),
+                               ("dogleg_antipad_x", "Dogleg anti-pad +/-X")):
                 edit = QLineEdit(); edit.textChanged.connect(self.on_editor_changed)
                 via_fields[key] = edit; side_form.addRow(label, edit)
             self.cap_line_fields[side] = line_fields
@@ -1489,7 +1494,9 @@ class MainWindow(QMainWindow):
                 [""] + [layer.name for layer in self.config.layers if layer.kind == "copper"],
                 via.dogleg_layer,
             )
-            for key in ("dogleg_length", "dogleg_width", "dogleg_clearance"):
+            for key in ("dogleg_length", "dogleg_width", "dogleg_clearance",
+                        "dogleg_d_via", "dogleg_column_radius", "dogleg_pad_radius",
+                        "dogleg_antipad_radius", "dogleg_antipad_x"):
                 self.cap_via_fields[side][key].setEnabled(via.dogleg_enabled)
             self.cap_dogleg_combos[side].setEnabled(via.dogleg_enabled and via.mechanical_enabled)
             for direction in ("upper", "lower"):
@@ -1547,7 +1554,9 @@ class MainWindow(QMainWindow):
             self._set_combo_choices(dogleg_combo, [""] + choices, dogleg_value)
             dogleg_on = self.cap_dogleg_checks[side].isChecked()
             dogleg_combo.setEnabled(dogleg_on and self.cap_mechanical_checks[side].isChecked())
-            for key in ("dogleg_length", "dogleg_width", "dogleg_clearance"):
+            for key in ("dogleg_length", "dogleg_width", "dogleg_clearance",
+                        "dogleg_d_via", "dogleg_column_radius", "dogleg_pad_radius",
+                        "dogleg_antipad_radius", "dogleg_antipad_x"):
                 self.cap_via_fields[side][key].setEnabled(dogleg_on)
         self._refresh_cap_void_table(copper)
         self._refresh_cap_antipad_table(copper)

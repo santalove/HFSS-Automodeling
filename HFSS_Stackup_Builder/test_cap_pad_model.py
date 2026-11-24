@@ -795,9 +795,10 @@ class CapPadModelTests(unittest.TestCase):
         # Everything at and below the dogleg layer leaves the laser axis.
         column = hfss.modeler.cylinder_args["CAP_INPUT_VIA_P_L2_L3_COLUMN"]
         self.assertEqual("CAP_LEFT_VIA_X2", column[1][0])
-        self.assertEqual("CAP_INPUT_P_VIA_Y", column[1][1])
+        self.assertEqual("CAP_INPUT_DOGLE_P_VIA_Y", column[1][1])
         laser = hfss.modeler.cylinder_args["CAP_INPUT_VIA_P_L1_L2_COLUMN"]
         self.assertEqual("CAP_LEFT_VIA_X", laser[1][0])
+        self.assertEqual("CAP_INPUT_P_VIA_Y", laser[1][1])
 
     def test_dogleg_variables_are_ignored_when_disabled(self):
         config = self._dogleg_config(dogleg_enabled=False)
@@ -833,16 +834,64 @@ class CapPadModelTests(unittest.TestCase):
         # the whole mechanical span stay on the shifted axis.
         laser = hfss.modeler.cylinder_args["CAP_INPUT_VIA_P_L2_L3_COLUMN"]
         self.assertEqual("CAP_LEFT_VIA_X2", laser[1][0])
-        self.assertEqual("CAP_INPUT_VIA_COLUMN_RADIUS", laser[2])
+        self.assertEqual("CAP_INPUT_DOGLE_COLUMN_RADIUS", laser[2])
         mechanical = hfss.modeler.cylinder_args["CAP_INPUT_VIA_P_L3_L5_COLUMN"]
         self.assertEqual("CAP_LEFT_VIA_X2", mechanical[1][0])
         self.assertEqual("CAP_INPUT_MECHANICAL_COLUMN_RADIUS", mechanical[2])
         below = hfss.modeler.cylinder_args["CAP_INPUT_VIA_P_L5_L6_COLUMN"]
         self.assertEqual("CAP_LEFT_VIA_X2", below[1][0])
-        self.assertEqual("CAP_INPUT_VIA_COLUMN_RADIUS", below[2])
+        self.assertEqual("CAP_INPUT_DOGLE_COLUMN_RADIUS", below[2])
         offset_pad = hfss.modeler.cylinder_args["CAP_INPUT_VIA_P_L2_OFFSET_PAD"]
         self.assertEqual("CAP_LEFT_VIA_X2", offset_pad[1][0])
-        self.assertEqual("CAP_INPUT_VIA_PAD_RADIUS", offset_pad[2])
+        self.assertEqual("CAP_INPUT_DOGLE_P_VIA_Y", offset_pad[1][1])
+        self.assertEqual("CAP_INPUT_DOGLE_PAD_RADIUS", offset_pad[2])
+
+    def test_dogleg_trace_slants_to_its_own_spacing_and_radii(self):
+        via = cap_model.CapViaConfig(
+            mechanical_enabled=True,
+            mechanical_start_layer="L3",
+            mechanical_end_layer="L5",
+            dogleg_enabled=True,
+            dogleg_layer="L2",
+            dogleg_length="0.4mm",
+            dogleg_width="60um",
+            dogleg_clearance="40um",
+            dogleg_d_via="0.30mm",
+            dogleg_column_radius="40um",
+            dogleg_pad_radius="80um",
+            dogleg_antipad_radius="160um",
+            dogleg_antipad_x="160um",
+        )
+        line = cap_model.DifferentialLineEndConfig(
+            upper_reference_layer_name="L4", lower_reference_layer_name="L8",
+        )
+        hfss = self._build(cap_model.CapPadConfig(
+            route_layers=["L6", "L5"], input_via=via, input_line=line,
+        ))
+        self.assertEqual("0.3mm", hfss.variables["CAP_INPUT_DOGLE_D_VIA"])
+        self.assertEqual("0.04mm", hfss.variables["CAP_INPUT_DOGLE_COLUMN_RADIUS"])
+        self.assertEqual("0.08mm", hfss.variables["CAP_INPUT_DOGLE_PAD_RADIUS"])
+        self.assertEqual("0.16mm", hfss.variables["CAP_INPUT_DOGLE_ANTIPAD_RADIUS"])
+        self.assertEqual("0.16mm", hfss.variables["CAP_INPUT_DOGLE_ANTIPAD_X"])
+        # The pulled-out stack runs on its own spacing and radii.
+        below = hfss.modeler.cylinder_args["CAP_INPUT_VIA_P_L2_L3_COLUMN"]
+        self.assertEqual("CAP_INPUT_DOGLE_P_VIA_Y", below[1][1])
+        self.assertEqual("CAP_INPUT_DOGLE_COLUMN_RADIUS", below[2])
+        offset_pad = hfss.modeler.cylinder_args["CAP_INPUT_VIA_P_L2_OFFSET_PAD"]
+        self.assertEqual("CAP_INPUT_DOGLE_P_VIA_Y", offset_pad[1][1])
+        self.assertEqual("CAP_INPUT_DOGLE_PAD_RADIUS", offset_pad[2])
+        # The slot on the offset layers follows the dogleg's own anti-pad.
+        slot = hfss.modeler.cylinder_args["CAP_INPUT_L3_SIG_SLOT_ANTIPAD"]
+        self.assertEqual("CAP_INPUT_DOGLE_P_VIA_Y", slot[1][1])
+        self.assertIn("CAP_INPUT_DOGLE_ANTIPAD_RADIUS", slot[2])
+        # The short trace slants: pad-axis Y at one end, dogleg Y at the other.
+        trace = hfss.modeler.polyline_args["CAP_INPUT_DOGLE_P"][0]
+        self.assertEqual("CAP_LEFT_VIA_X", trace[0][0])
+        self.assertEqual("CAP_LEFT_VIA_X2", trace[2][0])
+        self.assertIn("CAP_INPUT_P_VIA_Y", trace[0][1])
+        self.assertIn("CAP_INPUT_DOGLE_P_VIA_Y", trace[2][1])
+        channel = hfss.modeler.polyline_args["CAP_INPUT_DOGLE_CHANNEL_P"][0]
+        self.assertIn("CAP_INPUT_DOGLE_P_VIA_Y", channel[2][1])
 
     def test_invalid_dogleg_geometry_is_rejected(self):
         cases = (
