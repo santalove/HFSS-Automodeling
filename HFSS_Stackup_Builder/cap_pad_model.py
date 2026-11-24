@@ -477,17 +477,21 @@ def _validate(
                     f"{side} dogleg places the mechanical span on an offset axis and "
                     "therefore requires an enabled mechanical span."
                 )
-            if via.dogleg_layer != via.mechanical_start_layer:
-                raise ValueError(f"{side} dogleg_layer must equal mechanical_start_layer.")
             names = [item.name for item in via_path]
-            if via.dogleg_layer not in names:
+            if via.dogleg_layer not in names or via.mechanical_start_layer not in names:
                 raise ValueError(
                     f"{side} dogleg layer must lie on the mounting-to-route via path."
                 )
-            if names.index(via.dogleg_layer) in {0, len(names) - 1}:
+            dogleg_index = names.index(via.dogleg_layer)
+            if dogleg_index in {0, len(names) - 1}:
                 raise ValueError(
                     f"{side} dogleg layer must be an inner copper layer between the "
                     "mounting layer and the route layer."
+                )
+            if dogleg_index > names.index(via.mechanical_start_layer):
+                raise ValueError(
+                    f"{side} dogleg layer must not sit below the mechanical start layer; "
+                    "the shift has to happen before the mechanical drill."
                 )
             if dogleg_length <= 0:
                 raise ValueError(f"{side}_dogleg_length must be positive when the dogleg is enabled.")
@@ -1491,23 +1495,29 @@ def _via_stack(
         mechanical_end = path.index(
             next(item for item in path if item.name == via_config.mechanical_end_layer)
         )
-    segments: list[tuple[Layer, Layer, bool, str]] = []
+    segments: list[tuple[Layer, Layer, bool]] = []
     if mechanical:
         for index in range(mechanical_start):
-            segments.append((path[index], path[index + 1], False, x_laser))
-        segments.append((path[mechanical_start], path[mechanical_end], True, x_lower))
+            segments.append((path[index], path[index + 1], False))
+        segments.append((path[mechanical_start], path[mechanical_end], True))
         for index in range(mechanical_end, len(path) - 1):
-            segments.append((path[index], path[index + 1], False, x_lower))
+            segments.append((path[index], path[index + 1], False))
     else:
         for first, second in zip(path, path[1:]):
-            segments.append((first, second, False, x_laser))
+            segments.append((first, second, False))
     intermediate = {layer.name for layer in path[1:-1]}
     if mechanical:
         intermediate -= {item.name for item in path[mechanical_start + 1:mechanical_end]}
     dogleg_layer_name = via_config.dogleg_layer if dogleg else ""
+    dogleg_index = -1
+    if dogleg:
+        dogleg_index = path.index(
+            next(item for item in path if item.name == dogleg_layer_name)
+        )
     for side, y in (("P", f"CAP_{prefix}_P_VIA_Y"), ("N", f"CAP_{prefix}_N_VIA_Y")):
         dogleg_pads: list[object] = []
-        for first, second, is_mechanical, x in segments:
+        for first, second, is_mechanical in segments:
+            x = x_lower if (dogleg and path.index(first) >= dogleg_index) else x_laser
             shallow, deep = sorted((first, second), key=stackup.layers.index)
             shallow_origin = _origin(bottom_up, shallow.name)
             deep_origin = _origin(bottom_up, deep.name)
@@ -1525,13 +1535,22 @@ def _via_stack(
             if layer.name not in intermediate:
                 continue
             if dogleg and layer.name == dogleg_layer_name:
-                # The laser column ends here and the mechanical column starts
-                # on a second axis; both need their own landing pad.
+                # The column above the dogleg ends on the pad axis; the shifted
+                # stack below it needs its own pad on the dogleg axis.
+                shifted_name = (
+                    f"CAP_{prefix}_VIA_{side}_{_identifier(layer.name)}_MECH_PAD"
+                    if dogleg_index == mechanical_start
+                    else f"CAP_{prefix}_VIA_{side}_{_identifier(layer.name)}_OFFSET_PAD"
+                )
+                shifted_radius = (
+                    f"CAP_{prefix}_MECHANICAL_PAD_RADIUS"
+                    if dogleg_index == mechanical_start
+                    else f"CAP_{prefix}_VIA_PAD_RADIUS"
+                )
                 for pad_name, pad_x, pad_radius in (
                     (f"CAP_{prefix}_VIA_{side}_{_identifier(layer.name)}_PAD", x_laser,
                      f"CAP_{prefix}_VIA_PAD_RADIUS"),
-                    (f"CAP_{prefix}_VIA_{side}_{_identifier(layer.name)}_MECH_PAD", x_lower,
-                     f"CAP_{prefix}_MECHANICAL_PAD_RADIUS"),
+                    (shifted_name, x_lower, shifted_radius),
                 ):
                     pad = m.create_cylinder(
                         "Z", [pad_x, y, records[layer.name]["z_origin"]],
@@ -1544,7 +1563,7 @@ def _via_stack(
             mech_pad = mechanical and layer.name in {
                 via_config.mechanical_start_layer, via_config.mechanical_end_layer,
             }
-            pad_x = x_lower if (dogleg and path.index(layer) >= mechanical_start) else x_laser
+            pad_x = x_lower if (dogleg and path.index(layer) >= dogleg_index) else x_laser
             pad = m.create_cylinder(
                 "Z", [pad_x, y, records[layer.name]["z_origin"]],
                 f"CAP_{prefix}_MECHANICAL_PAD_RADIUS" if mech_pad else f"CAP_{prefix}_VIA_PAD_RADIUS",

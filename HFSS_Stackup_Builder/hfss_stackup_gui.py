@@ -1293,7 +1293,7 @@ class MainWindow(QMainWindow):
             dogleg_layer = NoWheelComboBox()
             dogleg_layer.currentTextChanged.connect(self.on_editor_changed)
             self.cap_dogleg_combos[side] = dogleg_layer
-            side_form.addRow("Dogleg layer (= mechanical start)", dogleg_layer)
+            side_form.addRow("Dogleg layer (laser ends here)", dogleg_layer)
             for key, label in (("dogleg_length", "Dogleg length (outward)"),
                                ("dogleg_width", "Dogleg trace width"),
                                ("dogleg_clearance", "Dogleg clearance")):
@@ -1534,11 +1534,17 @@ class MainWindow(QMainWindow):
                 self._set_combo_choices(combo, [""] + path, value)
                 combo.setEnabled(self.cap_mechanical_checks[side].isChecked())
             dogleg_combo = self.cap_dogleg_combos[side]
-            inner_path = path[1:-1]
+            # The shift may happen anywhere above the mechanical start layer,
+            # including on it, but never below the mechanical drill.
+            mechanical_start = self.cap_mechanical_combos[side]["start"].currentText()
+            if mechanical_start in path:
+                choices = path[1:path.index(mechanical_start) + 1]
+            else:
+                choices = path[1:-1]
             dogleg_value = dogleg_combo.currentText() or via.dogleg_layer
-            if dogleg_value not in inner_path:
-                dogleg_value = self.cap_mechanical_combos[side]["start"].currentText()
-            self._set_combo_choices(dogleg_combo, [""] + inner_path, dogleg_value)
+            if dogleg_value not in choices:
+                dogleg_value = mechanical_start if mechanical_start in choices else (choices[-1] if choices else "")
+            self._set_combo_choices(dogleg_combo, [""] + choices, dogleg_value)
             dogleg_on = self.cap_dogleg_checks[side].isChecked()
             dogleg_combo.setEnabled(dogleg_on and self.cap_mechanical_checks[side].isChecked())
             for key in ("dogleg_length", "dogleg_width", "dogleg_clearance"):
