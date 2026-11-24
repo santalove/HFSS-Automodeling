@@ -923,6 +923,69 @@ class CapPadModelTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "must not sit below the mechanical start layer"):
             cap_model._validate(self.stackup, ordering)
 
+    def test_simple_antipad_mode_routes_every_layer_through_one_variable(self):
+        config = cap_model.CapPadConfig()
+        config.antipad_mode = "simple"
+        config.simple_antipad_radius = "0.20mm"
+        config.input_via.layer_antipads["L2"] = {"radius": "140um", "x": "130um"}
+        config.output_via.layer_antipads["L4"] = {"radius": "180um", "x": "170um"}
+        hfss = self._build(config)
+        self.assertEqual("0.2mm", hfss.variables["CAP_SIMPLE_ANTIPAD_RADIUS"])
+        per_layer = [
+            key for key in hfss.variables
+            if key.startswith((
+                "CAP_INPUT_VIA_ANTIPAD_RADIUS_L", "CAP_INPUT_VIA_ANTIPAD_X_L",
+                "CAP_OUTPUT_VIA_ANTIPAD_RADIUS_L", "CAP_OUTPUT_VIA_ANTIPAD_X_L",
+            ))
+        ]
+        self.assertGreaterEqual(len(per_layer), 8)
+        for key in per_layer:
+            self.assertEqual("CAP_SIMPLE_ANTIPAD_RADIUS", hfss.variables[key], key)
+        # The slot geometry follows those variables, so one HFSS sweep retunes it.
+        slot = hfss.modeler.cylinder_args["CAP_INPUT_L2_SIG_SLOT_ANTIPAD"]
+        self.assertIn("CAP_INPUT_VIA_ANTIPAD_RADIUS_L2", slot[2])
+
+    def test_simple_antipad_mode_overrides_dogleg_slots_too(self):
+        config = self._dogleg_config(dogleg_antipad_radius="0.18mm", dogleg_antipad_x="0.17mm")
+        config.antipad_mode = "simple"
+        config.simple_antipad_radius = "0.22mm"
+        hfss = self._build(config)
+        self.assertEqual(
+            "CAP_SIMPLE_ANTIPAD_RADIUS", hfss.variables["CAP_INPUT_DOGLE_ANTIPAD_RADIUS"]
+        )
+        self.assertEqual(
+            "CAP_SIMPLE_ANTIPAD_RADIUS", hfss.variables["CAP_INPUT_DOGLE_ANTIPAD_X"]
+        )
+        dimensions = cap_model._validate(self.stackup, config)[3]
+        self.assertAlmostEqual(0.22, dimensions["input_dogleg_antipad_radius"])
+
+    def test_detailed_antipad_mode_keeps_per_layer_overrides(self):
+        config = cap_model.CapPadConfig()
+        config.simple_antipad_radius = "0.20mm"
+        config.input_via.layer_antipads["L2"] = {"radius": "140um", "x": "130um"}
+        hfss = self._build(config)
+        self.assertEqual("140um", hfss.variables["CAP_INPUT_VIA_ANTIPAD_RADIUS_L2"])
+        self.assertEqual("130um", hfss.variables["CAP_INPUT_VIA_ANTIPAD_X_L2"])
+        self.assertEqual("0.254mm", hfss.variables["CAP_INPUT_VIA_ANTIPAD_RADIUS_L3"])
+        # Outside simple mode the one-R variable just mirrors the default radius.
+        self.assertEqual("0.254mm", hfss.variables["CAP_SIMPLE_ANTIPAD_RADIUS"])
+
+    def test_simple_antipad_mode_round_trips_and_rejects_bad_values(self):
+        config = cap_model.CapPadConfig(
+            antipad_mode="simple", simple_antipad_radius="0.21mm",
+        )
+        restored = cap_model.CapPadConfig.from_dict(config.to_dict())
+        self.assertEqual("simple", restored.antipad_mode)
+        self.assertEqual("0.21mm", restored.simple_antipad_radius)
+        with self.assertRaisesRegex(ValueError, "antipad_mode must be"):
+            cap_model._validate(self.stackup, cap_model.CapPadConfig(antipad_mode="fast"))
+        # Simple R still has to clear the landing pad it surrounds.
+        with self.assertRaisesRegex(ValueError, "must exceed every via pad radius"):
+            cap_model._validate(
+                self.stackup,
+                cap_model.CapPadConfig(antipad_mode="simple", simple_antipad_radius="0.10mm"),
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

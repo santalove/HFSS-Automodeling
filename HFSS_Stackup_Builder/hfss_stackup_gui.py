@@ -1309,6 +1309,17 @@ class MainWindow(QMainWindow):
             self.cap_via_fields[side] = via_fields
             self.cap_mechanical_combos[side] = stages
             body.addWidget(group)
+        antipad_mode_box = QGroupBox("Anti-pad modelling mode")
+        mode_form = QFormLayout(antipad_mode_box)
+        self.cap_antipad_mode = NoWheelComboBox()
+        self.cap_antipad_mode.addItem("Detailed - per-layer radius and +/-X", "detailed")
+        self.cap_antipad_mode.addItem("Simple - one radius R for all layers (X = R)", "simple")
+        self.cap_antipad_mode.currentIndexChanged.connect(self._on_cap_antipad_mode_changed)
+        mode_form.addRow("Mode", self.cap_antipad_mode)
+        self.cap_simple_antipad_radius = QLineEdit()
+        self.cap_simple_antipad_radius.textChanged.connect(self.on_editor_changed)
+        mode_form.addRow("Simple anti-pad R", self.cap_simple_antipad_radius)
+        body.addWidget(antipad_mode_box)
         body.addWidget(QLabel("Per-layer anti-pad radii (blank = that side's default)."))
         self.cap_antipad_table = QTableWidget(0, 5)
         self.cap_antipad_table.setHorizontalHeaderLabels(
@@ -1340,7 +1351,8 @@ class MainWindow(QMainWindow):
         preview_layout.addWidget(self.cap_preview, 1)
         cap_preview_note = QLabel(
             "CAP GROUP VOID is the per-layer rounded-rectangle void for all four pads; ROUTE VOID is the W/S/G trace clearance.\n"
-            "LEFT/RIGHT VIA SLOT uses each stack's independent per-layer R/+/-X and remains separate from the group void."
+            "LEFT/RIGHT VIA SLOT uses each stack's independent per-layer R/+/-X and remains separate from the group void.\n"
+            "In SIMPLE anti-pad mode every layer uses one R (X = R) through CAP_SIMPLE_ANTIPAD_RADIUS; the per-layer table is kept but not assigned."
         )
         cap_preview_note.setWordWrap(True)
         preview_layout.addWidget(cap_preview_note)
@@ -1471,6 +1483,10 @@ class MainWindow(QMainWindow):
         opening_index = self.cap_mask_opening_mode.findData(config.solder_mask_opening_mode)
         self.cap_mask_opening_mode.setCurrentIndex(max(0, opening_index))
         self.cap_return_enabled.setChecked(config.return_vias_enabled)
+        self.cap_simple_antipad_radius.setText(str(config.simple_antipad_radius))
+        mode_index = self.cap_antipad_mode.findData(config.antipad_mode)
+        self.cap_antipad_mode.setCurrentIndex(max(0, mode_index))
+        self._apply_cap_antipad_mode()
         self._load_analysis_options("cap", config)
         copper = [layer.name for layer in self.config.layers if layer.kind == "copper"]
         for index, side in enumerate(("input", "output")):
@@ -1721,6 +1737,17 @@ class MainWindow(QMainWindow):
                     item.setFlags(item.flags() & ~Qt.ItemIsEditable)
                 table.setItem(row, column, item)
         table.blockSignals(False)
+        self._apply_cap_antipad_mode()
+
+    def _on_cap_antipad_mode_changed(self, *_: object) -> None:
+        self._apply_cap_antipad_mode()
+        self.on_editor_changed()
+
+    def _apply_cap_antipad_mode(self) -> None:
+        """Simple mode keeps the table editable-looking but unassigned in the model."""
+        simple = (self.cap_antipad_mode.currentData() or "detailed") == "simple"
+        self.cap_simple_antipad_radius.setEnabled(simple)
+        self.cap_antipad_table.setEnabled(not simple)
 
     def _refresh_cap_void_table(self, copper: list[str]) -> None:
         """Refresh the independently enabled rounded group void on each copper layer."""
@@ -1772,6 +1799,7 @@ class MainWindow(QMainWindow):
             self.cap_preview.update_layers(layers)
             return
         component_side = self.cap_component_side.currentData() or "top"
+        simple_antipad = (self.cap_antipad_mode.currentData() or "detailed") == "simple"
         component_layer = copper[0] if component_side == "top" else copper[-1]
         annotations[component_layer].append(f"{component_side.upper()} CAP PADS")
         if self.cap_solder_enabled.isChecked():
@@ -1821,10 +1849,13 @@ class MainWindow(QMainWindow):
                 radius_column, x_column = (1, 2) if side == "input" else (3, 4)
                 item = self.cap_antipad_table.item(row, radius_column) if row is not None else None
                 x_item = self.cap_antipad_table.item(row, x_column) if row is not None else None
-                radius = (item.text().strip() if item and item.text().strip() not in ("", "--")
-                          else self.cap_via_fields[side]["antipad_radius"].text().strip())
-                x_value = (x_item.text().strip() if x_item and x_item.text().strip() not in ("", "--")
-                           else self.cap_via_fields[side]["antipad_x"].text().strip())
+                if simple_antipad:
+                    radius = x_value = self.cap_simple_antipad_radius.text().strip()
+                else:
+                    radius = (item.text().strip() if item and item.text().strip() not in ("", "--")
+                              else self.cap_via_fields[side]["antipad_radius"].text().strip())
+                    x_value = (x_item.text().strip() if x_item and x_item.text().strip() not in ("", "--")
+                               else self.cap_via_fields[side]["antipad_x"].text().strip())
                 annotations[layer_name].append(f"{label} VIA SLOT R={radius} X={x_value}")
             for direction, suffix in (("upper", "UPPER REF"), ("lower", "LOWER REF")):
                 reference = self.cap_reference_combos[side][direction].currentText()
@@ -2260,6 +2291,8 @@ class MainWindow(QMainWindow):
     def cap_pad_config_from_ui(self) -> CapPadConfig:
         values = self.cap_pad_config.to_dict()
         values["component_side"] = self.cap_component_side.currentData() or "top"
+        values["antipad_mode"] = self.cap_antipad_mode.currentData() or "detailed"
+        values["simple_antipad_radius"] = self.cap_simple_antipad_radius.text().strip()
         values.update({key: edit.text().strip() for key, edit in self.cap_fields.items()})
         values.update({key: edit.text().strip() for key, edit in self.cap_surface_fields.items()})
         values["solder_enabled"] = self.cap_solder_enabled.isChecked()

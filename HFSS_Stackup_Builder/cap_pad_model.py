@@ -172,6 +172,8 @@ class CapPadConfig:
     via_column_radius: str = "0.057mm"
     via_pad_radius: str = "0.127mm"
     via_antipad_radius: str = "0.254mm"
+    antipad_mode: str = "detailed"
+    simple_antipad_radius: str = "0.254mm"
     return_vias_enabled: bool = True
     return_column_radius: str = "0.057mm"
     return_via_pitch: str = "0.50mm"
@@ -220,6 +222,7 @@ class CapPadConfig:
                 "left_breakout_length", "left_breakout_width",
                 "right_breakout_length", "right_breakout_width",
                 "via_pad_radius", "via_antipad_radius", "return_column_radius",
+                "simple_antipad_radius",
                 "return_via_pitch", "return_via_clearance", "side_margin",
                 "solder_material", "solder_height", "solder_mask_dk", "solder_mask_df",
                 "solder_mask_copper_thickness", "solder_mask_gap_thickness",
@@ -271,6 +274,8 @@ class CapPadConfig:
             values["real_component_enabled"] = False
         if "sweep_points" in data:
             values["sweep_points"] = int(data["sweep_points"])
+        if "antipad_mode" in data:
+            values["antipad_mode"] = str(data["antipad_mode"]).strip().lower()
         if "route_layers" in data:
             values["route_layers"] = [str(item) for item in data["route_layers"]]
         if "input_line" in data:
@@ -408,6 +413,13 @@ def _validate(
         )
 
     dimensions: dict[str, float] = {}
+    antipad_mode = str(config.antipad_mode or "detailed").strip().lower()
+    if antipad_mode not in {"detailed", "simple"}:
+        raise ValueError("antipad_mode must be 'detailed' or 'simple'.")
+    simple_antipad = (
+        _literal_mm(str(config.simple_antipad_radius), "simple_antipad_radius")
+        if antipad_mode == "simple" else None
+    )
     for prefix, line in (("input", config.input_line), ("output", config.output_line)):
         for field_name in ("trace_length", "fanout_length", "w_line", "s_line", "g_line"):
             key = f"{prefix}_{field_name}"
@@ -423,6 +435,9 @@ def _validate(
         "solder_mask_transition_width", "solder_mask_opening_expansion",
     ):
         dimensions[name] = _literal_mm(str(getattr(config, name)), name)
+    dimensions["simple_antipad_radius"] = (
+        simple_antipad if simple_antipad is not None else dimensions["via_antipad_radius"]
+    )
     for side, via, route, line in (
         ("input", config.input_via, selected[0], config.input_line),
         ("output", config.output_via, selected[1], config.output_line),
@@ -431,8 +446,10 @@ def _validate(
             dimensions[f"{side}_{key}"] = _literal_mm(str(getattr(via, key)), f"{side}_{key}")
         if dimensions[f"{side}_pad_radius"] <= dimensions[f"{side}_column_radius"]:
             raise ValueError(f"{side} pad_radius must exceed column_radius.")
-        if dimensions[f"{side}_antipad_radius"] <= dimensions[f"{side}_pad_radius"]:
+        if dimensions[f"{side}_antipad_radius"] <= dimensions[f"{side}_pad_radius"] and simple_antipad is None:
             raise ValueError(f"{side} antipad_radius must exceed pad_radius.")
+        if simple_antipad is not None and simple_antipad <= dimensions[f"{side}_pad_radius"]:
+            raise ValueError("simple_antipad_radius must exceed every via pad radius.")
         via_path = _copper_path(stackup, component_layer, route)
         clearance_layers = _line_reference_clearance_layers(stackup, route, line)
         configurable_layers = [
@@ -447,8 +464,13 @@ def _validate(
             )
         for layer in configurable_layers:
             override = via.layer_antipads.get(layer.name, {})
-            radius = _literal_mm(override.get("radius", via.antipad_radius), f"{side} {layer.name} antipad radius")
-            x_value = _literal_mm(override.get("x", via.antipad_x), f"{side} {layer.name} antipad +/-X")
+            if simple_antipad is not None:
+                # Simple mode: one shared R for every layer and both sides, with
+                # +/-X pinned to R so a single sweep in HFSS retunes the model.
+                radius = x_value = simple_antipad
+            else:
+                radius = _literal_mm(override.get("radius", via.antipad_radius), f"{side} {layer.name} antipad radius")
+                x_value = _literal_mm(override.get("x", via.antipad_x), f"{side} {layer.name} antipad +/-X")
             dimensions[f"{side}_antipad_{layer.name}"] = radius
             dimensions[f"{side}_antipad_x_{layer.name}"] = x_value
             required = 0.0
@@ -498,6 +520,9 @@ def _validate(
             _literal_mm(str(via.dogleg_antipad_x), f"{side}_dogleg_antipad_x")
             if str(via.dogleg_antipad_x).strip() else dimensions[f"{side}_antipad_x"]
         )
+        if simple_antipad is not None:
+            # Simple mode owns every anti-pad, including the shifted dogleg slots.
+            dogleg_antipad_radius = dogleg_antipad_x = simple_antipad
         if via.dogleg_enabled:
             if not via.mechanical_enabled:
                 raise ValueError(
@@ -2093,6 +2118,7 @@ def _build_geometry(hfss: Hfss, stackup: StackupConfig, config: CapPadConfig) ->
         "CAP_OUTPUT_W_LINE": config.output_line.w_line,
         "CAP_OUTPUT_S_LINE": config.output_line.s_line,
         "CAP_OUTPUT_G_LINE": config.output_line.g_line,
+        "CAP_SIMPLE_ANTIPAD_RADIUS": _mm(dimensions["simple_antipad_radius"]),
     }
     for prefix, via, route, line in (
         ("INPUT", config.input_via, input_layer, config.input_line),
@@ -2115,8 +2141,14 @@ def _build_geometry(hfss: Hfss, stackup: StackupConfig, config: CapPadConfig) ->
         ):
             override = via.layer_antipads.get(layer.name, {})
             suffix = _identifier(layer.name)
-            variables[f"CAP_{prefix}_VIA_ANTIPAD_RADIUS_{suffix}"] = override.get("radius", via.antipad_radius)
-            variables[f"CAP_{prefix}_VIA_ANTIPAD_X_{suffix}"] = override.get("x", via.antipad_x)
+            if config.antipad_mode == "simple":
+                # Every layer points at the one tuning variable so a single
+                # HFSS sweep retunes all anti-pads; X equals R.
+                variables[f"CAP_{prefix}_VIA_ANTIPAD_RADIUS_{suffix}"] = "CAP_SIMPLE_ANTIPAD_RADIUS"
+                variables[f"CAP_{prefix}_VIA_ANTIPAD_X_{suffix}"] = "CAP_SIMPLE_ANTIPAD_RADIUS"
+            else:
+                variables[f"CAP_{prefix}_VIA_ANTIPAD_RADIUS_{suffix}"] = override.get("radius", via.antipad_radius)
+                variables[f"CAP_{prefix}_VIA_ANTIPAD_X_{suffix}"] = override.get("x", via.antipad_x)
     for layer_name, settings in config.layer_pad_voids.items():
         if not settings.get("enabled", False):
             continue
@@ -2149,8 +2181,12 @@ def _build_geometry(hfss: Hfss, stackup: StackupConfig, config: CapPadConfig) ->
         hfss[f"CAP_{prefix}_DOGLE_D_VIA"] = _mm(dimensions[f"{prefix.lower()}_dogleg_d_via"])
         hfss[f"CAP_{prefix}_DOGLE_COLUMN_RADIUS"] = _mm(dimensions[f"{prefix.lower()}_dogleg_column_radius"])
         hfss[f"CAP_{prefix}_DOGLE_PAD_RADIUS"] = _mm(dimensions[f"{prefix.lower()}_dogleg_pad_radius"])
-        hfss[f"CAP_{prefix}_DOGLE_ANTIPAD_RADIUS"] = _mm(dimensions[f"{prefix.lower()}_dogleg_antipad_radius"])
-        hfss[f"CAP_{prefix}_DOGLE_ANTIPAD_X"] = _mm(dimensions[f"{prefix.lower()}_dogleg_antipad_x"])
+        if config.antipad_mode == "simple":
+            hfss[f"CAP_{prefix}_DOGLE_ANTIPAD_RADIUS"] = "CAP_SIMPLE_ANTIPAD_RADIUS"
+            hfss[f"CAP_{prefix}_DOGLE_ANTIPAD_X"] = "CAP_SIMPLE_ANTIPAD_RADIUS"
+        else:
+            hfss[f"CAP_{prefix}_DOGLE_ANTIPAD_RADIUS"] = _mm(dimensions[f"{prefix.lower()}_dogleg_antipad_radius"])
+            hfss[f"CAP_{prefix}_DOGLE_ANTIPAD_X"] = _mm(dimensions[f"{prefix.lower()}_dogleg_antipad_x"])
     # The dogleg axis is the route-side axis; it collapses onto the laser axis
     # whenever the dogleg length is zero.
     hfss["CAP_LEFT_VIA_X2"] = "CAP_LEFT_VIA_X-CAP_INPUT_DOGLE_LENGTH"
