@@ -35,6 +35,7 @@ try:
         set_copper_transparency,
     )
     from differential_via_model import (
+        SIMPLE_ANTIPAD_VARIABLE,
         DifferentialLineEndConfig,
         _antipad_variable_names,
         _create_line_return_rows,
@@ -48,6 +49,7 @@ try:
         _reference_span,
         _return_disk_intersects_route,
         _return_disk_intersects_slot,
+        _simple_antipad_mm,
         _transition_reference_span,
         _unite_coplanar_signal,
         _validate_stackup,
@@ -69,6 +71,7 @@ except ImportError:  # pragma: no cover
         set_copper_transparency,
     )
     from .differential_via_model import (
+        SIMPLE_ANTIPAD_VARIABLE,
         DifferentialLineEndConfig,
         _antipad_variable_names,
         _create_line_return_rows,
@@ -82,6 +85,7 @@ except ImportError:  # pragma: no cover
         _reference_span,
         _return_disk_intersects_route,
         _return_disk_intersects_slot,
+        _simple_antipad_mm,
         _transition_reference_span,
         _unite_coplanar_signal,
         _validate_stackup,
@@ -109,6 +113,8 @@ class MultiStageDifferentialViaConfig:
     mechanical_pad_radius: str = "6mil"
     via_antipad_radius: str = "10mil"
     via_antipad_x: str = "10mil"
+    antipad_mode: str = "detailed"
+    simple_antipad_radius: str = "10mil"
     layer_antipads: dict[str, dict[str, str]] = field(default_factory=dict)
     return_column_radius: str = "0.057mm"
     line_return_pitch: str = "5mil"
@@ -132,6 +138,7 @@ class MultiStageDifferentialViaConfig:
                 "stage1_d_via", "stage2_d_via", "bridge_clear_length", "bridge_width",
                 "via_column_radius", "via_pad_radius", "mechanical_column_radius",
                 "mechanical_pad_radius", "via_antipad_radius", "via_antipad_x",
+                "simple_antipad_radius",
                 "return_column_radius", "line_return_pitch", "line_return_edge_offset",
                 "local_return_pitch", "local_return_clearance", "side_margin",
                 "open_region_frequency", "sweep_start", "sweep_stop",
@@ -146,6 +153,8 @@ class MultiStageDifferentialViaConfig:
             values["end_line"] = DifferentialLineEndConfig.from_dict(data["end_line"])
         if "sweep_points" in data:
             values["sweep_points"] = int(data["sweep_points"])
+        if "antipad_mode" in data:
+            values["antipad_mode"] = str(data["antipad_mode"]).strip().lower()
         for name in ("create_open_region", "create_setup", "create_sweep"):
             if name in data:
                 value = data[name]
@@ -258,10 +267,14 @@ def _validate_config(
     route = copper[start_index:output_index + 1]
     radius_values: list[float] = []
     x_values: list[float] = []
+    simple_antipad = _simple_antipad_mm(config)
     for layer in route:
-        radius_text, x_text = _layer_antipad_values(config, layer.name)
-        radius = _literal_mm(radius_text, f"via_antipad_radius_{layer.name}")
-        x_value = _literal_mm(x_text, f"via_antipad_x_{layer.name}")
+        if simple_antipad is not None:
+            radius = x_value = simple_antipad
+        else:
+            radius_text, x_text = _layer_antipad_values(config, layer.name)
+            radius = _literal_mm(radius_text, f"via_antipad_radius_{layer.name}")
+            x_value = _literal_mm(x_text, f"via_antipad_x_{layer.name}")
         if radius <= 0 or x_value <= 0:
             raise ValueError(f"{layer.name} anti-pad radius and X must be positive.")
         active_radius = dimensions["via_column_radius"]
@@ -678,6 +691,7 @@ def _build_geometry(
         "MECHANICAL_VIA_PAD_RADIUS": config.mechanical_pad_radius,
         "VIA_ANTIPAD_RADIUS": config.via_antipad_radius,
         "VIA_ANTIPAD_X": config.via_antipad_x,
+        SIMPLE_ANTIPAD_VARIABLE: config.simple_antipad_radius,
         "RETURN_COLUMN_RADIUS": config.return_column_radius,
         "LINE_RETURN_PITCH": config.line_return_pitch,
         "LINE_RETURN_EDGE_OFFSET": config.line_return_edge_offset,

@@ -769,5 +769,47 @@ class InnerGFModelTests(unittest.TestCase):
             )
 
 
+    def test_simple_antipad_mode_uses_one_shared_variable(self):
+        inner = self.inner_config(
+            antipad_mode="simple", simple_antipad_radius="12mil",
+            layer_antipads={"L2": {"radius": "20mil", "x": "18mil"}},
+        )
+        hfss = _Hfss()
+        inner_model._build_inner_stack(hfss, self.stackup, self.gssg, inner)
+        self.assertEqual("12mil", hfss.variables["VIA_SIMPLE_ANTIPAD_RADIUS"])
+        for layer in ("L1", "L2", "L3", "L4", "L5", "L6", "L7", "L8"):
+            self.assertEqual(
+                "VIA_SIMPLE_ANTIPAD_RADIUS",
+                hfss.variables[f"VIA_ANTIPAD_RADIUS_{layer}"],
+            )
+            self.assertEqual(
+                "VIA_SIMPLE_ANTIPAD_RADIUS", hfss.variables[f"VIA_ANTIPAD_X_{layer}"]
+            )
+        # The per-layer override is irrelevant once simple mode owns the slots.
+        self.assertEqual(
+            "VIA_ANTIPAD_RADIUS_L2",
+            hfss.modeler.cylinder_args["SIG_SLOT_ANTIPAD_L2"][2],
+        )
+
+    def test_simple_antipad_mode_round_trips_and_rejects_bad_values(self):
+        inner = self.inner_config(
+            antipad_mode="simple", simple_antipad_radius="12mil",
+        )
+        restored = inner_model.InnerGFConfig.from_dict(inner.to_dict())
+        self.assertEqual("simple", restored.antipad_mode)
+        self.assertEqual("12mil", restored.simple_antipad_radius)
+        with self.assertRaisesRegex(ValueError, "antipad_mode must be"):
+            inner_model._validate_inner_config(
+                self.stackup, self.gssg, self.inner_config(antipad_mode="fast")
+            )
+        with self.assertRaisesRegex(ValueError, "must exceed every via pad radius"):
+            inner_model._validate_inner_config(
+                self.stackup, self.gssg,
+                self.inner_config(
+                    antipad_mode="simple", simple_antipad_radius="3mil",
+                ),
+            )
+
+
 if __name__ == "__main__":
     unittest.main()

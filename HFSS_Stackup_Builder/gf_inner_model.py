@@ -96,6 +96,8 @@ class InnerGFConfig:
     via_column_radius: str = "0.057mm"
     via_antipad_radius: str = "10mil"
     via_antipad_x: str = "10mil"
+    antipad_mode: str = "detailed"
+    simple_antipad_radius: str = "10mil"
     layer_antipads: dict[str, dict[str, str]] = field(default_factory=dict)
     mechanical_via_enabled: bool = False
     mechanical_start_layer: str = ""
@@ -131,6 +133,7 @@ class InnerGFConfig:
                 "via_column_radius",
                 "via_antipad_radius",
                 "via_antipad_x",
+                "simple_antipad_radius",
                 "mechanical_start_layer",
                 "mechanical_end_layer",
                 "mechanical_column_radius",
@@ -151,6 +154,8 @@ class InnerGFConfig:
         for name in ("gnd_return_via_count", "sweep_points"):
             if name in data:
                 values[name] = int(data[name])
+        if "antipad_mode" in data:
+            values["antipad_mode"] = str(data["antipad_mode"]).strip().lower()
         for name in (
             "mechanical_via_enabled", "create_open_region", "create_setup", "create_sweep"
         ):
@@ -314,9 +319,24 @@ def _inner_via_topology(
     return path, laser_segments, mechanical, pad_technology
 
 
+def _inner_simple_antipad_mm(inner: InnerGFConfig) -> float | None:
+    """Return the shared anti-pad radius in mm, or None in detailed mode."""
+    mode = str(getattr(inner, "antipad_mode", "detailed") or "detailed").strip().lower()
+    if mode not in {"detailed", "simple"}:
+        raise ValueError("antipad_mode must be 'detailed' or 'simple'.")
+    if mode != "simple":
+        return None
+    return _literal_mm(str(inner.simple_antipad_radius))
+
+
+SIMPLE_ANTIPAD_VARIABLE = "VIA_SIMPLE_ANTIPAD_RADIUS"
+
+
 def _inner_layer_antipad_values(
     inner: InnerGFConfig, layer_name: str
 ) -> tuple[str, str]:
+    if _inner_simple_antipad_mm(inner) is not None:
+        return SIMPLE_ANTIPAD_VARIABLE, SIMPLE_ANTIPAD_VARIABLE
     override = inner.layer_antipads.get(layer_name, {})
     return (
         str(override.get("radius", inner.via_antipad_radius)),
@@ -421,9 +441,13 @@ def _validate_inner_config(
     pad_mm = _literal_mm(inner.via_pad_radius)
     column_mm = _literal_mm(inner.via_column_radius)
     antipad_mm = _literal_mm(inner.via_antipad_radius)
+    simple_antipad_mm = _inner_simple_antipad_mm(inner)
     if pad_mm is not None and column_mm is not None and pad_mm <= column_mm:
         raise ValueError("via_pad_radius must be greater than via_column_radius.")
-    if antipad_mm is not None and pad_mm is not None and antipad_mm <= pad_mm:
+    if (
+        simple_antipad_mm is None and antipad_mm is not None
+        and pad_mm is not None and antipad_mm <= pad_mm
+    ):
         raise ValueError("via_antipad_radius must be greater than via_pad_radius.")
     if inner.pad_void_end_layer_name:
         _require_positive_expression(inner.pad_void_x1, "pad_void_x1")
@@ -457,15 +481,22 @@ def _validate_inner_config(
         stackup, gf, inner_signal, inner
     )
     for layer in path:
+        technology = pad_technology.get(layer.name)
+        active_pad_mm = (
+            mechanical_pad_mm if technology == "mechanical" else pad_mm
+        )
+        if simple_antipad_mm is not None:
+            radius_mm = simple_antipad_mm
+            if active_pad_mm is not None and radius_mm <= active_pad_mm:
+                raise ValueError(
+                    "simple_antipad_radius must exceed every via pad radius."
+                )
+            continue
         radius_text, x_text = _inner_layer_antipad_values(inner, layer.name)
         _require_positive_expression(radius_text, f"via_antipad_radius_{layer.name}")
         _require_positive_expression(x_text, f"via_antipad_x_{layer.name}")
         radius_mm = _literal_mm(radius_text)
-        technology = pad_technology.get(layer.name)
         if technology and radius_mm is not None:
-            active_pad_mm = (
-                mechanical_pad_mm if technology == "mechanical" else pad_mm
-            )
             if active_pad_mm is not None and radius_mm <= active_pad_mm:
                 raise ValueError(
                     f"via_antipad_radius_{layer.name} must exceed its {technology} pad radius."
@@ -1047,6 +1078,7 @@ def _build_inner_stack(
         "VIA_COLUMN_RADIUS": inner.via_column_radius,
         "VIA_ANTIPAD_RADIUS": inner.via_antipad_radius,
         "VIA_ANTIPAD_X": inner.via_antipad_x,
+        SIMPLE_ANTIPAD_VARIABLE: inner.simple_antipad_radius,
         "MECHANICAL_VIA_COLUMN_RADIUS": inner.mechanical_column_radius,
         "MECHANICAL_VIA_PAD_RADIUS": inner.mechanical_pad_radius,
         "D_VIA": inner.d_via,

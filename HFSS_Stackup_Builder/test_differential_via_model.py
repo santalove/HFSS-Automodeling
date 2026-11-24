@@ -748,5 +748,47 @@ class DifferentialViaModelTests(unittest.TestCase):
         )
 
 
+    def test_simple_antipad_mode_uses_one_shared_variable(self):
+        config = via_model.DifferentialViaConfig(
+            antipad_mode="simple", simple_antipad_radius="12mil",
+        )
+        config.layer_antipads["L3"] = {"radius": "20mil", "x": "18mil"}
+        hfss = self._build(config)
+        self.assertEqual("12mil", hfss.variables["VIA_SIMPLE_ANTIPAD_RADIUS"])
+        for layer in ("L1", "L2", "L3", "L4", "L5", "L6", "L7", "L8"):
+            self.assertEqual(
+                "VIA_SIMPLE_ANTIPAD_RADIUS", hfss.variables[f"VIA_ANTIPAD_RADIUS_{layer}"]
+            )
+            self.assertEqual(
+                "VIA_SIMPLE_ANTIPAD_RADIUS", hfss.variables[f"VIA_ANTIPAD_X_{layer}"]
+            )
+        slot = hfss.modeler.cylinder_args["L3_SIG_SLOT_ANTIPAD"]
+        self.assertEqual("VIA_ANTIPAD_RADIUS_L3", slot[2])
+        dimensions = via_model._validate_config(self.stackup, config)[2]
+        self.assertAlmostEqual(0.3048, dimensions["via_antipad_radius_L3"], places=6)
+        self.assertAlmostEqual(
+            0.3048, dimensions["transition_via_antipad_radius"], places=6
+        )
+
+    def test_simple_antipad_mode_round_trips_and_rejects_bad_values(self):
+        config = via_model.DifferentialViaConfig(
+            antipad_mode="simple", simple_antipad_radius="12mil",
+        )
+        restored = via_model.DifferentialViaConfig.from_dict(config.to_dict())
+        self.assertEqual("simple", restored.antipad_mode)
+        self.assertEqual("12mil", restored.simple_antipad_radius)
+        with self.assertRaisesRegex(ValueError, "antipad_mode must be"):
+            via_model._validate_config(
+                self.stackup, via_model.DifferentialViaConfig(antipad_mode="fast")
+            )
+        with self.assertRaisesRegex(ValueError, "must exceed every via pad radius"):
+            via_model._validate_config(
+                self.stackup,
+                via_model.DifferentialViaConfig(
+                    antipad_mode="simple", simple_antipad_radius="3mil",
+                ),
+            )
+
+
 if __name__ == "__main__":
     unittest.main()

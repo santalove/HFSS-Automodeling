@@ -287,5 +287,49 @@ class MultiStageDifferentialViaTests(unittest.TestCase):
                     multi_model._validate_config(self.stackup, config)
 
 
+    def test_simple_antipad_mode_uses_one_shared_variable(self):
+        config = multi_model.MultiStageDifferentialViaConfig(
+            antipad_mode="simple", simple_antipad_radius="12mil",
+        )
+        config.layer_antipads["L4"] = {"radius": "20mil", "x": "18mil"}
+        hfss = self._build(config)
+        self.assertEqual("12mil", hfss.variables["VIA_SIMPLE_ANTIPAD_RADIUS"])
+        for layer in ("L1", "L2", "L3", "L4", "L5", "L6", "L7"):
+            self.assertEqual(
+                "VIA_SIMPLE_ANTIPAD_RADIUS",
+                hfss.variables[f"VIA_ANTIPAD_RADIUS_{layer}"],
+            )
+            self.assertEqual(
+                "VIA_SIMPLE_ANTIPAD_RADIUS", hfss.variables[f"VIA_ANTIPAD_X_{layer}"]
+            )
+        dimensions = multi_model._validate_config(self.stackup, config)[4]
+        self.assertAlmostEqual(0.3048, dimensions["via_antipad_radius_L4"], places=6)
+        self.assertAlmostEqual(
+            0.3048, dimensions["transition_via_antipad_radius"], places=6
+        )
+
+    def test_simple_antipad_mode_round_trips_and_rejects_bad_values(self):
+        config = multi_model.MultiStageDifferentialViaConfig(
+            antipad_mode="simple", simple_antipad_radius="12mil",
+        )
+        restored = multi_model.MultiStageDifferentialViaConfig.from_dict(
+            config.to_dict()
+        )
+        self.assertEqual("simple", restored.antipad_mode)
+        self.assertEqual("12mil", restored.simple_antipad_radius)
+        with self.assertRaisesRegex(ValueError, "antipad_mode must be"):
+            multi_model._validate_config(
+                self.stackup,
+                multi_model.MultiStageDifferentialViaConfig(antipad_mode="fast"),
+            )
+        with self.assertRaisesRegex(ValueError, "must exceed active pad/column"):
+            multi_model._validate_config(
+                self.stackup,
+                multi_model.MultiStageDifferentialViaConfig(
+                    antipad_mode="simple", simple_antipad_radius="3mil",
+                ),
+            )
+
+
 if __name__ == "__main__":
     unittest.main()

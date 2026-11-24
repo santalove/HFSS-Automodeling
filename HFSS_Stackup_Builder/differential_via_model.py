@@ -103,6 +103,8 @@ class DifferentialViaConfig:
     via_pad_radius: str = "0.127mm"
     via_antipad_radius: str = "10mil"
     via_antipad_x: str = "10mil"
+    antipad_mode: str = "detailed"
+    simple_antipad_radius: str = "10mil"
     layer_antipads: dict[str, dict[str, str]] = field(default_factory=dict)
     mechanical_via_enabled: bool = False
     mechanical_start_layer: str = ""
@@ -129,7 +131,7 @@ class DifferentialViaConfig:
             name: str(data[name])
             for name in (
                 "d_via", "via_column_radius", "via_pad_radius", "via_antipad_radius",
-                "via_antipad_x",
+                "via_antipad_x", "simple_antipad_radius",
                 "mechanical_start_layer", "mechanical_end_layer",
                 "mechanical_column_radius", "mechanical_pad_radius",
                 "return_column_radius", "line_return_pitch", "line_return_edge_offset",
@@ -148,6 +150,8 @@ class DifferentialViaConfig:
                 }
         if "sweep_points" in data:
             values["sweep_points"] = int(data["sweep_points"])
+        if "antipad_mode" in data:
+            values["antipad_mode"] = str(data["antipad_mode"]).strip().lower()
         if "route_layers" in data:
             values["route_layers"] = [str(item) for item in data["route_layers"]]
         if "layer_antipads" in data and isinstance(data["layer_antipads"], dict):
@@ -267,9 +271,24 @@ def _via_topology(
     return path, laser_segments, mechanical, pad_technology
 
 
+def _simple_antipad_mm(config: object) -> float | None:
+    """Return the shared anti-pad radius in mm, or None in detailed mode."""
+    mode = str(getattr(config, "antipad_mode", "detailed") or "detailed").strip().lower()
+    if mode not in {"detailed", "simple"}:
+        raise ValueError("antipad_mode must be 'detailed' or 'simple'.")
+    if mode != "simple":
+        return None
+    return _literal_mm(str(config.simple_antipad_radius), "simple_antipad_radius")
+
+
+SIMPLE_ANTIPAD_VARIABLE = "VIA_SIMPLE_ANTIPAD_RADIUS"
+
+
 def _layer_antipad_values(
     config: DifferentialViaConfig, layer_name: str
 ) -> tuple[str, str]:
+    if _simple_antipad_mm(config) is not None:
+        return SIMPLE_ANTIPAD_VARIABLE, SIMPLE_ANTIPAD_VARIABLE
     override = config.layer_antipads.get(layer_name, {})
     return (
         str(override.get("radius", config.via_antipad_radius)),
@@ -325,7 +344,7 @@ def _validate_config(
             raise ValueError(f"{name} must be {'non-negative' if name in nonnegative else 'positive'}.")
     if dimensions["via_pad_radius"] <= dimensions["via_column_radius"]:
         raise ValueError("via_pad_radius must be greater than via_column_radius.")
-    if dimensions["via_antipad_radius"] <= dimensions["via_pad_radius"]:
+    if dimensions["via_antipad_radius"] <= dimensions["via_pad_radius"] and _simple_antipad_mm(config) is None:
         raise ValueError("via_antipad_radius must be greater than via_pad_radius.")
     if dimensions["mechanical_pad_radius"] <= dimensions["mechanical_column_radius"]:
         raise ValueError(
@@ -337,10 +356,18 @@ def _validate_config(
     )
     layer_radii: list[float] = []
     layer_x_values: list[float] = []
+    simple_antipad = _simple_antipad_mm(config)
+    if simple_antipad is not None and simple_antipad <= max(
+        dimensions["via_pad_radius"], dimensions["mechanical_pad_radius"]
+    ):
+        raise ValueError("simple_antipad_radius must exceed every via pad radius.")
     for layer in path:
-        radius_text, x_text = _layer_antipad_values(config, layer.name)
-        radius = _literal_mm(radius_text, f"via_antipad_radius_{layer.name}")
-        x_value = _literal_mm(x_text, f"via_antipad_x_{layer.name}")
+        if simple_antipad is not None:
+            radius = x_value = simple_antipad
+        else:
+            radius_text, x_text = _layer_antipad_values(config, layer.name)
+            radius = _literal_mm(radius_text, f"via_antipad_radius_{layer.name}")
+            x_value = _literal_mm(x_text, f"via_antipad_x_{layer.name}")
         if radius <= 0 or x_value <= 0:
             raise ValueError(f"{layer.name} anti-pad radius and X must be positive.")
         pad_kind = pad_technology.get(layer.name)
@@ -1077,6 +1104,7 @@ def _build_geometry(
         "VIA_PAD_RADIUS": config.via_pad_radius,
         "VIA_ANTIPAD_RADIUS": config.via_antipad_radius,
         "VIA_ANTIPAD_X": config.via_antipad_x,
+        SIMPLE_ANTIPAD_VARIABLE: config.simple_antipad_radius,
         "MECHANICAL_VIA_COLUMN_RADIUS": config.mechanical_column_radius,
         "MECHANICAL_VIA_PAD_RADIUS": config.mechanical_pad_radius,
         "RETURN_COLUMN_RADIUS": config.return_column_radius,

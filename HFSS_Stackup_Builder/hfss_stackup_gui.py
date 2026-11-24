@@ -564,6 +564,52 @@ class MainWindow(QMainWindow):
         combo.currentTextChanged.connect(self.on_editor_changed)
         return combo
 
+    def _build_antipad_mode_group(self, prefix: str) -> QGroupBox:
+        """Create one simple/detailed anti-pad selector for a via-bearing tab."""
+        group = QGroupBox("Anti-pad modelling mode")
+        form = QFormLayout(group)
+        combo = NoWheelComboBox()
+        combo.addItem("Detailed - per-layer radius and +/-X", "detailed")
+        combo.addItem("Simple - one radius R for all layers (X = R)", "simple")
+        combo.currentIndexChanged.connect(self.on_editor_changed)
+        edit = QLineEdit()
+        edit.textChanged.connect(self.on_editor_changed)
+        form.addRow("Mode", combo)
+        form.addRow("Simple anti-pad R", edit)
+        setattr(self, f"{prefix}_antipad_mode", combo)
+        setattr(self, f"{prefix}_simple_antipad_radius", edit)
+        return group
+
+    def _apply_antipad_mode(self, prefix: str, *fields: dict[str, QLineEdit]) -> None:
+        """Grey out the per-layer base radius/X when one shared R is in charge."""
+        combo = getattr(self, f"{prefix}_antipad_mode")
+        edit = getattr(self, f"{prefix}_simple_antipad_radius")
+        simple = (combo.currentData() or "detailed") == "simple"
+        edit.setEnabled(simple)
+        for values in fields:
+            for key in ("via_antipad_radius", "via_antipad_x"):
+                widget = values.get(key)
+                if widget is not None:
+                    widget.setEnabled(not simple)
+
+    def _on_inner_antipad_mode_changed(self) -> None:
+        self._apply_antipad_mode("inner", self.inner_gf_fields)
+        self.on_editor_changed()
+
+    def _on_via_antipad_mode_changed(self) -> None:
+        self._apply_antipad_mode(
+            "via", self.differential_via_fields, self.multistage_via_fields
+        )
+        self.on_editor_changed()
+
+    def _load_antipad_mode(self, prefix: str, config: object, *fields: dict[str, QLineEdit]) -> None:
+        combo = getattr(self, f"{prefix}_antipad_mode")
+        edit = getattr(self, f"{prefix}_simple_antipad_radius")
+        mode = str(getattr(config, "antipad_mode", "detailed") or "detailed")
+        edit.setText(str(getattr(config, "simple_antipad_radius", edit.text())))
+        combo.setCurrentIndex(max(0, combo.findData(mode)))
+        self._apply_antipad_mode(prefix, *fields)
+
     def _build_analysis_group(self, prefix: str) -> QGroupBox:
         """Create one independent Radiation/Setup/Sweep editor for a tab."""
         group = QGroupBox("Radiation / analysis generation")
@@ -788,6 +834,11 @@ class MainWindow(QMainWindow):
         controls_layout.addWidget(group)
 
         self.inner_options_group = QGroupBox("Inner breakout VIA parameters")
+        inner_mode_group = self._build_antipad_mode_group("inner")
+        self.inner_antipad_mode.currentIndexChanged.connect(
+            self._on_inner_antipad_mode_changed
+        )
+        controls_layout.addWidget(inner_mode_group)
         inner_form = QFormLayout(self.inner_options_group)
         self.inner_gf_fields: dict[str, QLineEdit] = {}
         inner_fields = (
@@ -877,6 +928,7 @@ class MainWindow(QMainWindow):
         )
         controls_layout.addWidget(self.inner_mechanical_group)
         controls_layout.addWidget(self._build_analysis_group("gssg"))
+        self._apply_antipad_mode("inner", self.inner_gf_fields)
         self.gf_mode_help = QLabel()
         self.gf_mode_help.setWordWrap(True)
         controls_layout.addWidget(self.gf_mode_help)
@@ -983,6 +1035,12 @@ class MainWindow(QMainWindow):
             via_form.addRow(label, edit)
         controls_layout.addWidget(via_group)
 
+        via_mode_group = self._build_antipad_mode_group("via")
+        self.via_antipad_mode.currentIndexChanged.connect(
+            self._on_via_antipad_mode_changed
+        )
+        controls_layout.addWidget(via_mode_group)
+
         mechanical_group = QGroupBox("Optional mechanical VIA")
         self.single_via_mechanical_group = mechanical_group
         mechanical_form = QFormLayout(mechanical_group)
@@ -1068,7 +1126,8 @@ class MainWindow(QMainWindow):
             "Signal columns always remain independent solids.\n"
             "Only coplanar Trace + Fanout + Landing Pad / transfer bridge are united.\n"
             "Laser stacks have a pad on every copper layer; a mechanical span has pads only at its two ends.\n"
-            "Each copper layer has independent VIA_ANTIPAD_RADIUS_<layer> and VIA_ANTIPAD_X_<layer> variables."
+            "Each copper layer has independent VIA_ANTIPAD_RADIUS_<layer> and VIA_ANTIPAD_X_<layer> variables.\n"
+            "In SIMPLE anti-pad mode all layers use VIA_SIMPLE_ANTIPAD_RADIUS with X = R; the per-layer table is kept but not assigned."
         ))
         controls_layout.addStretch(1)
         via_controls_scroll = QScrollArea()
@@ -1093,6 +1152,9 @@ class MainWindow(QMainWindow):
         build.clicked.connect(lambda: self.generate_project("differential_via"))
         layout.addLayout(self._row_with_widgets(output, browse, build))
         self.tabs.addTab(tab, "Differential VIA")
+        self._apply_antipad_mode(
+            "via", self.differential_via_fields, self.multistage_via_fields
+        )
         self._update_via_mode_visibility()
 
     # ---------- Open-circuit PCB capacitor footprint ----------
@@ -1914,6 +1976,7 @@ class MainWindow(QMainWindow):
         self.inner_mechanical_via_enabled.setChecked(config.mechanical_via_enabled)
         self.inner_mechanical_column_radius.setText(config.mechanical_column_radius)
         self.inner_mechanical_pad_radius.setText(config.mechanical_pad_radius)
+        self._load_antipad_mode("inner", config, self.inner_gf_fields)
 
     def _load_differential_via_fields(
         self, config: DifferentialViaConfig, load_shared: bool = True
@@ -1943,6 +2006,7 @@ class MainWindow(QMainWindow):
             self._load_via_reference_values(config.start_line, config.end_line)
         for key, edit in self.differential_via_fields.items():
             edit.setText(str(getattr(config, key)))
+        self._load_antipad_mode("via", config, self.differential_via_fields)
         if load_shared:
             self._load_analysis_options("via", config)
 
@@ -1952,6 +2016,7 @@ class MainWindow(QMainWindow):
         self._refresh_multistage_layer_choices(config.route_layers)
         for key, edit in self.multistage_via_fields.items():
             edit.setText(str(getattr(config, key)))
+        self._load_antipad_mode("via", config, self.multistage_via_fields)
         if load_shared:
             for key, edit in self.via_start_line_fields.items():
                 edit.setText(str(getattr(config.start_line, key)))
@@ -2379,6 +2444,11 @@ class MainWindow(QMainWindow):
             self.inner_mechanical_column_radius.text().strip()
         )
         values["mechanical_pad_radius"] = self.inner_mechanical_pad_radius.text().strip()
+        values["antipad_mode"] = self.inner_antipad_mode.currentData() or "detailed"
+        values["simple_antipad_radius"] = (
+            self.inner_simple_antipad_radius.text().strip()
+            or self.inner_gf_fields["via_antipad_radius"].text().strip()
+        )
         values["layer_antipads"] = {
             layer: dict(settings)
             for layer, settings in self.inner_gf_config.layer_antipads.items()
@@ -2408,6 +2478,11 @@ class MainWindow(QMainWindow):
         values["mechanical_end_layer"] = self.mechanical_end_layer.currentText()
         values["mechanical_column_radius"] = self.mechanical_column_radius.text().strip()
         values["mechanical_pad_radius"] = self.mechanical_pad_radius.text().strip()
+        values["antipad_mode"] = self.via_antipad_mode.currentData() or "detailed"
+        values["simple_antipad_radius"] = (
+            self.via_simple_antipad_radius.text().strip()
+            or self.differential_via_fields["via_antipad_radius"].text().strip()
+        )
         values["layer_antipads"] = {
             layer: dict(settings)
             for layer, settings in self.differential_via_config.layer_antipads.items()
@@ -2433,6 +2508,11 @@ class MainWindow(QMainWindow):
         ]
         values["start_line"] = DifferentialLineEndConfig(**start_values)
         values["end_line"] = DifferentialLineEndConfig(**end_values)
+        values["antipad_mode"] = self.via_antipad_mode.currentData() or "detailed"
+        values["simple_antipad_radius"] = (
+            self.via_simple_antipad_radius.text().strip()
+            or self.multistage_via_fields["via_antipad_radius"].text().strip()
+        )
         values["layer_antipads"] = {
             layer: dict(settings)
             for layer, settings in self.multistage_via_config.layer_antipads.items()
